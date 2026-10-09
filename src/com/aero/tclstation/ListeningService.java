@@ -8,6 +8,8 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.AudioManager;
+import android.view.KeyEvent;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -20,7 +22,6 @@ import org.vosk.Model;
 import org.vosk.Recognizer;
 import org.vosk.android.RecognitionListener;
 import org.vosk.android.SpeechService;
-import org.vosk.android.StorageService;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -45,6 +46,7 @@ public final class ListeningService extends Service implements RecognitionListen
     private String pendingSpeech;
     private String pendingSpeechId;
     private boolean voiceReady;
+    private int voiceGeneration;
     private boolean loading;
     private boolean capturing;
     // Process-local Activity speech exists before the foreground service is started.
@@ -55,10 +57,15 @@ public final class ListeningService extends Service implements RecognitionListen
     static boolean isEnabled() { return active != null; }
     static boolean isCapturing() { return active != null && active.capturing; }
 
+    static boolean isSpeechActive() { return speechHold.isWaiting(); }
+    static boolean isSpokenResponsePending(String id) { return speechHold.isHeld(id); }
+
     static void pauseForPushToTalk() {
+        speechHold.pauseForPushToTalk(); // Persist before a service exists, including startup races.
         if (active != null) active.pauseForSpeechUi();
     }
     static void resumeAfterPushToTalk() {
+        speechHold.resumeAfterPushToTalk();
         if (active != null) active.resumeFromSpeechUi();
     }
     static String beginSpokenResponse(Object owner) {
@@ -73,6 +80,23 @@ public final class ListeningService extends Service implements RecognitionListen
         if (speechHold.cancelOwner(owner) && active != null) active.scheduleResume(700);
     }
 
+
+    static boolean resetVoiceEngine() {
+        if (active == null || active.voice == null) return true;
+        if (active.voice.stop() != TextToSpeech.SUCCESS) {
+            active.fail("Could not stop previous speech; hands-free stopped");
+            return false;
+        }
+        ++active.voiceGeneration; // Ignore late callbacks from the old engine.
+        active.voice.shutdown();
+        active.voice = null;
+        active.voiceReady = false;
+        active.pendingSpeech = null;
+        active.pendingSpeechId = null;
+        speechHold.cancelOwner(active);
+        active.scheduleResume(700);
+        return true;
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -98,7 +122,7 @@ public final class ListeningService extends Service implements RecognitionListen
         if (!loading && model == null) {
             loading = true;
             final int request = ++generation;
-            StorageService.unpack(this, "model-en-us", "model", loaded -> {
+            StationModelLoader.load(this, loaded -> {
                 if (active != this || request != generation) { loaded.close(); return; }
                 model = loaded;
                 try {
@@ -165,13 +189,11 @@ public final class ListeningService extends Service implements RecognitionListen
     }
 
     private void pauseForSpeechUi() {
-        speechHold.pauseForPushToTalk();
         ++resumeEpoch;
         stopMicrophone();
         notifyStatus("Paused for push-to-talk");
     }
     private void resumeFromSpeechUi() {
-        speechHold.resumeAfterPushToTalk();
         if (speechHold.mayResume()) scheduleResume(700);
     }
     private String deferResponse(Object owner, String prefix) {
@@ -199,8 +221,19 @@ public final class ListeningService extends Service implements RecognitionListen
         String text;
         try { text = new JSONObject(json).optString("text", ""); }
         catch (Exception e) { return; }
-        VoiceCommand command = gate.accept(text, SystemClock.elapsedRealtime());
-        if (command.action == VoiceCommand.Action.UNKNOWN) return;
+        long now = SystemClock.elapsedRealtime();
+        VoiceCommand command = gate.accept(text, now);
+        if (command.action == VoiceCommand.Action.UNKNOWN) {
+            // Transient feedback only after a wake: show what Vosk actually heard,
+            // without saving a transcript or placing it in Android's notification.
+            if (gate.listeningForCommand(now) && !text.isEmpty()) {
+                MainActivity activity = MainActivity.foregroundActivity();
+                if (activity != null) activity.showVoiceStatus("Heard: " + text.substring(0, Math.min(70, text.length()))
+                    + " • try a listed phrase");
+                notifyStatus("Wake active • try a short listed command");
+            }
+            return;
+        }
         if (command.action == VoiceCommand.Action.STOP_LISTENING) {
             stopSelf();
             return;
@@ -220,6 +253,11 @@ public final class ListeningService extends Service implements RecognitionListen
             } else if (command.action == VoiceCommand.Action.WEATHER) {
                 String weather = getSharedPreferences("station", MODE_PRIVATE).getString("last_weather", "Open Station to load weather.");
                 speak(weather.replace("•", ", ").replace("\n", ". "));
+            } else if (command.action == VoiceCommand.Action.PLAY_MEDIA
+                || command.action == VoiceCommand.Action.PAUSE_MEDIA
+                || command.action == VoiceCommand.Action.NEXT_MEDIA) {
+                backgroundMedia(command.action);
+                scheduleResume(700);
             } else {
                 notifyStatus("Command heard; open Station to use it");
                 speak("Open Station to use that command.");
@@ -227,34 +265,71 @@ public final class ListeningService extends Service implements RecognitionListen
         }
     }
 
+    private void backgroundMedia(VoiceCommand.Action action) {
+        AudioManager audio = getSystemService(AudioManager.class);
+        if (audio == null) {
+            notifyStatus("Android media controls unavailable");
+            return;
+        }
+        if (action != VoiceCommand.Action.PLAY_MEDIA && !audio.isMusicActive()) {
+            notifyStatus("No active media player; open Station Music first");
+            return;
+        }
+        int key;
+        switch (action) {
+            case PLAY_MEDIA: key = KeyEvent.KEYCODE_MEDIA_PLAY; break;
+            case PAUSE_MEDIA: key = KeyEvent.KEYCODE_MEDIA_PAUSE; break;
+            case NEXT_MEDIA: key = KeyEvent.KEYCODE_MEDIA_NEXT; break;
+            default: return;
+        }
+        long at = SystemClock.uptimeMillis();
+        audio.dispatchMediaKeyEvent(new KeyEvent(at, at, KeyEvent.ACTION_DOWN, key, 0));
+        audio.dispatchMediaKeyEvent(new KeyEvent(at, at, KeyEvent.ACTION_UP, key, 0));
+        notifyStatus(action == VoiceCommand.Action.PLAY_MEDIA
+            ? "Play requested; open Station Music if nothing starts"
+            : "Media key sent to Android's active player");
+    }
+
     private void speak(String message) {
         String id = deferResponse(this, "station-hands-free");
         if (voiceReady && voice != null) {
-            StationVoiceProfile.apply(this, voice);
+            if (!StationVoiceProfile.apply(this, voice)) {
+                finishResponse(this, id);
+                fail("Offline voice unavailable; hands-free stopped without system-voice fallback");
+                return;
+            }
             if (voice.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) finishResponse(this, id);
             return;
         }
         if (pendingSpeechId != null) finishResponse(this, pendingSpeechId);
         pendingSpeech = message;
         pendingSpeechId = id;
-        if (voice == null) voice = new TextToSpeech(this, status -> {
-            if (status != TextToSpeech.SUCCESS || voice == null) { finishResponse(this, pendingSpeechId); return; }
-            voiceReady = voice.setLanguage(Locale.US) >= 0;
-            if (!voiceReady) { finishResponse(this, pendingSpeechId); return; }
-            voice.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String id) { }
-                @Override public void onDone(String id) { main.post(() -> finishResponse(ListeningService.this, id)); }
-                @Override public void onError(String id) { main.post(() -> finishResponse(ListeningService.this, id)); }
-                @Override public void onStop(String id, boolean interrupted) { main.post(() -> finishResponse(ListeningService.this, id)); }
-            });
-            if (pendingSpeech != null) {
-                StationVoiceProfile.apply(this, voice);
-                if (voice.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
+        if (voice == null) {
+            final int request = ++voiceGeneration;
+            voice = StationVoiceProfile.create(this, status -> {
+                if (request != voiceGeneration) return;
+                if (status != TextToSpeech.SUCCESS || voice == null || !StationVoiceProfile.apply(this, voice)) {
                     finishResponse(this, pendingSpeechId);
-                pendingSpeech = null;
-                pendingSpeechId = null;
-            }
-        });
+                    pendingSpeech = null;
+                    pendingSpeechId = null;
+                    fail("Offline voice unavailable; hands-free stopped without system-voice fallback");
+                    return;
+                }
+                voiceReady = true;
+                voice.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override public void onStart(String id) { }
+                    @Override public void onDone(String id) { main.post(() -> finishResponse(ListeningService.this, id)); }
+                    @Override public void onError(String id) { main.post(() -> finishResponse(ListeningService.this, id)); }
+                    @Override public void onStop(String id, boolean interrupted) { main.post(() -> finishResponse(ListeningService.this, id)); }
+                });
+                if (pendingSpeech != null) {
+                    if (voice.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
+                        finishResponse(this, pendingSpeechId);
+                    pendingSpeech = null;
+                    pendingSpeechId = null;
+                }
+            });
+        }
     }
 
     @Override public void onPartialResult(String result) { /* Never dispatch an unfinished phrase. */ }
@@ -270,6 +345,7 @@ public final class ListeningService extends Service implements RecognitionListen
 
     @Override public void onDestroy() {
         ++generation;
+        ++voiceGeneration;
         ++resumeEpoch;
         stopMicrophone();
         if (recognizer != null) { recognizer.close(); recognizer = null; }

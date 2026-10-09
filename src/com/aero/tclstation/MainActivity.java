@@ -20,10 +20,10 @@ import android.os.SystemClock;
 import android.provider.AlarmClock;
 import android.provider.MediaStore;
 import android.provider.Settings;
-import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -33,6 +33,11 @@ import android.widget.ScrollView;
 import android.widget.TextClock;
 import android.widget.TextView;
 
+import org.vosk.Model;
+import org.vosk.Recognizer;
+import org.vosk.android.RecognitionListener;
+import org.vosk.android.SpeechService;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -41,7 +46,6 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
@@ -67,15 +71,23 @@ public final class MainActivity extends Activity {
     private TextView weatherSummary;
     private Button refresh;
     private android.app.AlertDialog liveCameraDialog;
-    private static final int VOICE_REQUEST = 91;
+    private LiveCameraDialog cameraPreview;
+    private boolean requestedFront;
     private static final int HOME_REQUEST = 92;
     private static final int MICROPHONE_REQUEST = 44;
+    private static final int SPEAK_PERMISSION_REQUEST = 45;
+    private static final int SPEAK_TIMEOUT_MS = 9000;
     private static WeakReference<MainActivity> foreground = new WeakReference<>(null);
-    private VoiceCommand pendingVoice;
     private boolean resumed;
     private boolean pushToTalkActive;
+    private int tapEpoch;
+    private Model tapModel;
+    private Recognizer tapRecognizer;
+    private SpeechService tapMicrophone;
+    private Button speakButton;
     private TextToSpeech speech;
     private boolean speechReady;
+    private int speechGeneration;
     private String pendingSpeech;
     private String pendingSpeechId;
     private Button handsFree;
@@ -196,14 +208,14 @@ public final class MainActivity extends Activity {
         handsFree.setOnClickListener(v -> toggleListening());
         footer.addView(handsFree, new LinearLayout.LayoutParams(dp(166), dp(52)));
         refreshListeningButton();
-        Button speak = new Button(this);
-        speak.setText("Speak");
-        speak.setAllCaps(false);
-        speak.setContentDescription("Speak a Station command; microphone is off until tapped");
-        speak.setTextColor(BACKGROUND);
-        speak.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT[0]));
-        speak.setOnClickListener(v -> startVoiceInput());
-        footer.addView(speak, new LinearLayout.LayoutParams(dp(130), dp(52)));
+        speakButton = new Button(this);
+        speakButton.setText("Speak");
+        speakButton.setAllCaps(false);
+        speakButton.setContentDescription("Speak a Station command locally; tap again to stop");
+        speakButton.setTextColor(BACKGROUND);
+        speakButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT[0]));
+        speakButton.setOnClickListener(v -> startVoiceInput());
+        footer.addView(speakButton, new LinearLayout.LayoutParams(dp(130), dp(52)));
         navButton(footer, "›", () -> goToPage(Math.min(2, currentPage() + 1)));
         horizontal.setOnScrollChangeListener((v, x, y, oldX, oldY) -> updatePageLabel());
         updatePageLabel();
@@ -289,8 +301,17 @@ public final class MainActivity extends Activity {
                 action(card, "Open alarms", () -> open(new Intent(AlarmClock.ACTION_SHOW_ALARMS)));
                 break;
             case 3:
-                text(card, "Opens YouTube Music in an available app or browser.", 14, MUTED, false);
-                action(card, "Open YouTube Music", () -> open(new Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/"))));
+                text(card, "Opens YouTube Music; media keys go to Android's active player.", 14, MUTED, false);
+                action(card, "Open YouTube Music", this::openMusic);
+                LinearLayout mediaActions = new LinearLayout(this);
+                mediaActions.setOrientation(LinearLayout.HORIZONTAL);
+                card.addView(mediaActions, new LinearLayout.LayoutParams(-1, -2));
+                Button play = action(mediaActions, "Play", () -> mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY));
+                play.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1));
+                Button pause = action(mediaActions, "Pause", () -> mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE));
+                pause.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1));
+                Button next = action(mediaActions, "Next", () -> mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT));
+                next.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1));
                 break;
             case 4:
                 text(card, "Android handles audio. No EQ or mixer.", 14, MUTED, false);
@@ -301,17 +322,11 @@ public final class MainActivity extends Activity {
                 beep.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1));
                 Button spoken = action(audioActions, "Test spoken reply", () -> say("Station voice test. If you hear me from the Echo Studio, tablet text-to-speech is working."));
                 spoken.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1));
-                Button voiceChoice = action(card, StationVoiceProfile.softer(this) ? "Voice: alternate (tap for original)" : "Voice: original (tap for alternate)", () -> {
-                    boolean softer = StationVoiceProfile.toggle(this);
-                    int x = horizontal.getScrollX();
-                    say(softer ? "Trying the alternate voice." : "Original voice selected.");
-                    buildDashboard();
-                    horizontal.post(() -> horizontal.scrollTo(x, 0));
-                });
+                Button voiceChoice = action(card, StationVoiceProfile.model(this) ? "Voice: offline model (tap for system)" : "Voice: system (tap for offline model)", this::switchVoice);
                 voiceChoice.getLayoutParams().height = dp(42);
-                voiceChoice.setContentDescription(StationVoiceProfile.softer(this)
-                    ? "Alternate voice requested. Tap to try original voice"
-                    : "Original voice selected. Tap to try alternate voice");
+                voiceChoice.setContentDescription(StationVoiceProfile.model(this)
+                    ? "Offline model voice selected. Tap to use the system voice"
+                    : "System voice selected. Tap to try the offline model voice");
                 break;
             case 5:
                 text(card, "Open the live preview while present. No background camera, video clips, cloud stream, or alerts.", 14, MUTED, false);
@@ -380,28 +395,122 @@ public final class MainActivity extends Activity {
     }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
 
-    private void openLiveCamera() {
+    private void openLiveCamera() { openLiveCamera(false); }
+
+    private void openLiveCamera(boolean front) {
+        requestedFront = front;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, 43);
             return;
         }
-        if (liveCameraDialog != null && liveCameraDialog.isShowing()) return;
-        liveCameraDialog = LiveCameraDialog.show(this, this::startVoiceInput);
+        if (liveCameraDialog != null && liveCameraDialog.isShowing()) {
+            cameraPreview.selectFacing(front);
+            return;
+        }
+        cameraPreview = LiveCameraDialog.show(this, this::startVoiceInput, front);
+        liveCameraDialog = cameraPreview.dialog();
     }
 
     private void startVoiceInput() {
-        pushToTalkActive = ListeningService.isEnabled();
-        ListeningService.pauseForPushToTalk();
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Try: show weather, open camera, set timer for five minutes");
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-        try { startActivityForResult(intent, VOICE_REQUEST); }
-        catch (ActivityNotFoundException | SecurityException e) {
-            pushToTalkActive = false;
-            ListeningService.resumeAfterPushToTalk();
-            showVoiceStatus("Speech recognition app unavailable");
+        if (pushToTalkActive) {
+            stopLocalInput();
+            showVoiceStatus("Speak cancelled; microphone off");
+            return;
         }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, SPEAK_PERMISSION_REQUEST);
+            return;
+        }
+        startLocalInput();
+    }
+
+    private void startLocalInput() {
+        if (ListeningService.isSpeechActive()) {
+            showVoiceStatus("Wait for the spoken reply to finish, then tap Speak");
+            return;
+        }
+        if (liveCameraDialog != null) liveCameraDialog.dismiss();
+        liveCameraDialog = null;
+        ListeningService.pauseForPushToTalk();
+        pushToTalkActive = true;
+        final int request = ++tapEpoch;
+        speakButton.setText("Speak: loading");
+        if (tapModel != null) {
+            openLocalMicrophone(request);
+            return;
+        }
+        StationModelLoader.load(this, loaded -> {
+            if (!pushToTalkActive || request != tapEpoch || isDestroyed()) {
+                loaded.close();
+                return;
+            }
+            tapModel = loaded;
+            openLocalMicrophone(request);
+        }, error -> {
+            if (!pushToTalkActive || request != tapEpoch || isDestroyed()) return;
+            stopLocalInput();
+            showVoiceStatus("Offline speech model unavailable; microphone off");
+        });
+    }
+
+    private void openLocalMicrophone(int request) {
+        try {
+            tapRecognizer = new Recognizer(tapModel, 16000.0f);
+            tapMicrophone = new SpeechService(tapRecognizer, 16000.0f);
+            if (!tapMicrophone.startListening(new RecognitionListener() {
+                @Override public void onPartialResult(String json) {
+                    if (request == tapEpoch && pushToTalkActive
+                        && !parseVoskText(json, "partial").isEmpty()) speakButton.setText("Speak: hearing");
+                }
+                @Override public void onResult(String json) { acceptLocalResult(request, json, false); }
+                @Override public void onFinalResult(String json) { acceptLocalResult(request, json, true); }
+                @Override public void onError(Exception error) {
+                    if (request != tapEpoch || !pushToTalkActive) return;
+                    stopLocalInput();
+                    showVoiceStatus("Local microphone failed; tap Speak to retry");
+                }
+                @Override public void onTimeout() {
+                    if (request != tapEpoch || !pushToTalkActive) return;
+                    acceptLocalResult(request, tapRecognizer.getFinalResult(), true);
+                }
+            }, SPEAK_TIMEOUT_MS)) throw new IOException("Could not start local microphone");
+            speakButton.setText("Speak: listening");
+            showVoiceStatus("Listening locally on the tablet; tap Speak again to cancel");
+        } catch (IOException | SecurityException error) {
+            stopLocalInput();
+            showVoiceStatus("Local microphone unavailable; tap Speak to retry");
+        }
+    }
+
+    private static String parseVoskText(String json, String field) {
+        try { return new org.json.JSONObject(json).optString(field, "").trim(); }
+        catch (org.json.JSONException error) { return ""; }
+    }
+
+    private void acceptLocalResult(int request, String json, boolean terminal) {
+        if (request != tapEpoch || !pushToTalkActive) return;
+        String text = parseVoskText(json, "text");
+        if (text.isEmpty() && !terminal) return;
+        stopLocalInput();
+        if (text.isEmpty()) showVoiceStatus("No command heard; microphone off");
+        else handleVoice(VoiceCommand.parse(text));
+    }
+
+    private void stopLocalInput() {
+        if (!pushToTalkActive) return;
+        ++tapEpoch; // Ignore already-posted recognition callbacks and model-load completions.
+        pushToTalkActive = false;
+        if (tapMicrophone != null) {
+            tapMicrophone.cancel();
+            tapMicrophone.shutdown();
+            tapMicrophone = null;
+        }
+        if (tapRecognizer != null) {
+            tapRecognizer.close();
+            tapRecognizer = null;
+        }
+        if (speakButton != null) speakButton.setText("Speak");
+        ListeningService.resumeAfterPushToTalk();
     }
 
     private void toggleListening() {
@@ -425,7 +534,9 @@ public final class MainActivity extends Activity {
         boolean on = ListeningService.isEnabled();
         handsFree.setText(on ? ListeningService.isCapturing() ? "Hands-free: On" : "Hands-free: Loading" : "Hands-free: Off");
         handsFree.setContentDescription(on
-            ? "Continuous local microphone on. Tap to stop hands-free listening."
+            ? ListeningService.isCapturing()
+                ? "Continuous local microphone on. Tap to stop hands-free listening."
+                : "Hands-free enabled; microphone paused or loading. Tap to stop."
             : "Microphone off. Tap to enable local hands-free listening, including while the screen is off.");
     }
 
@@ -451,21 +562,7 @@ public final class MainActivity extends Activity {
         if (requestCode == HOME_REQUEST) {
             RoleManager roles = getSystemService(RoleManager.class);
             showVoiceStatus(roles != null && roles.isRoleHeld(RoleManager.ROLE_HOME) ? "Station is now Home" : "Home app unchanged");
-            return;
         }
-        if (requestCode != VOICE_REQUEST) return;
-        pushToTalkActive = false;
-        if (resultCode == RESULT_OK && data != null) {
-            ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-            if (results != null && !results.isEmpty()) {
-                VoiceCommand command = VoiceCommand.parse(results.get(0));
-                if (resumed) handleVoice(command);
-                else pendingVoice = command;
-            }
-        }
-        // The recognizer can return to the previous launcher instead of resuming Station.
-        // Its result is terminal; release the push-to-talk hold even if this Activity stays paused.
-        ListeningService.resumeAfterPushToTalk();
     }
 
     @Override protected void onResume() {
@@ -473,13 +570,7 @@ public final class MainActivity extends Activity {
         resumed = true;
         foreground = new WeakReference<>(this);
         refreshListeningButton();
-        if (pendingVoice != null) {
-            VoiceCommand command = pendingVoice;
-            pendingVoice = null;
-            new Handler(Looper.getMainLooper()).post(() -> {
-                if (resumed) { handleVoice(command); ListeningService.resumeAfterPushToTalk(); }
-            });
-        } else if (!pushToTalkActive) ListeningService.resumeAfterPushToTalk();
+        if (!pushToTalkActive) ListeningService.resumeAfterPushToTalk();
     }
 
     void handleVoice(VoiceCommand command) {
@@ -496,8 +587,12 @@ public final class MainActivity extends Activity {
                 say("It is " + format.format(new Date()) + " Denver time.");
                 break;
             case CAMERA:
-                showVoiceStatus("Opening live camera");
-                openLiveCamera();
+                showVoiceStatus("Opening live back camera");
+                openLiveCamera(false);
+                break;
+            case CAMERA_FRONT:
+                showVoiceStatus("Opening live front camera");
+                openLiveCamera(true);
                 break;
             case CLOSE_CAMERA:
                 if (liveCameraDialog != null) liveCameraDialog.dismiss();
@@ -513,11 +608,27 @@ public final class MainActivity extends Activity {
             case TIMERS:
                 open(new Intent(AlarmClock.ACTION_SHOW_TIMERS));
                 break;
+            case SET_ALARM:
+                showVoiceStatus("Review alarm in Android Clock");
+                open(new Intent(AlarmClock.ACTION_SET_ALARM)
+                    .putExtra(AlarmClock.EXTRA_HOUR, command.hour)
+                    .putExtra(AlarmClock.EXTRA_MINUTES, command.minute)
+                    .putExtra(AlarmClock.EXTRA_SKIP_UI, false));
+                break;
             case ALARMS:
                 open(new Intent(AlarmClock.ACTION_SHOW_ALARMS));
                 break;
             case MUSIC:
-                open(new Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/")));
+                openMusic();
+                break;
+            case PLAY_MEDIA:
+                mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY);
+                break;
+            case PAUSE_MEDIA:
+                mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE);
+                break;
+            case NEXT_MEDIA:
+                mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT);
                 break;
             case HOME:
                 if (liveCameraDialog != null) liveCameraDialog.dismiss();
@@ -541,11 +652,38 @@ public final class MainActivity extends Activity {
         android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show();
     }
 
+    private void switchVoice() {
+        // Do not release any microphone hold until the previous engine confirms stop.
+        if (speech != null && speech.stop() != TextToSpeech.SUCCESS) {
+            showVoiceStatus("Could not stop speech; voice unchanged");
+            return;
+        }
+        ++speechGeneration;
+        if (speech != null) { speech.shutdown(); speech = null; }
+        speechReady = false;
+        pendingSpeech = null;
+        pendingSpeechId = null;
+        ListeningService.cancelSpokenResponses(this);
+        if (!ListeningService.resetVoiceEngine()) {
+            showVoiceStatus("Could not stop hands-free speech; voice unchanged");
+            return;
+        }
+        boolean selected = StationVoiceProfile.toggle(this);
+        int x = horizontal.getScrollX();
+        say(selected ? "Testing the offline model voice." : "Using the system voice.");
+        buildDashboard();
+        horizontal.post(() -> horizontal.scrollTo(x, 0));
+    }
+
     private void say(String message) {
         showVoiceStatus(message);
         String id = ListeningService.beginSpokenResponse(this);
+        watchActivitySpeech(id);
         if (speechReady && speech != null) {
-            applyVoiceChoice();
+            if (!applyVoiceChoice()) {
+                ListeningService.spokenResponseFinished(this, id);
+                return;
+            }
             if (speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR)
                 ListeningService.spokenResponseFinished(this, id);
             return;
@@ -553,45 +691,90 @@ public final class MainActivity extends Activity {
         if (pendingSpeechId != null) ListeningService.spokenResponseFinished(this, pendingSpeechId);
         pendingSpeech = message;
         pendingSpeechId = id;
-        if (speech == null) speech = new TextToSpeech(this, status -> {
-            if (status != TextToSpeech.SUCCESS || speech == null) {
-                ListeningService.spokenResponseFinished(this, pendingSpeechId);
-                return;
-            }
-            speechReady = speech.setLanguage(Locale.US) >= 0;
-            if (!speechReady) { ListeningService.spokenResponseFinished(this, pendingSpeechId); return; }
-            speech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String id) { }
-                @Override public void onDone(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
-                @Override public void onError(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
-                @Override public void onStop(String id, boolean interrupted) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
-            });
-            if (speechReady && pendingSpeech != null) {
-                applyVoiceChoice();
-                if (speech.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
+        if (speech == null) {
+            final int request = ++speechGeneration;
+            speech = StationVoiceProfile.create(this, status -> {
+                if (request != speechGeneration) return;
+                if (status != TextToSpeech.SUCCESS || speech == null) {
+                    showVoiceStatus("Voice engine unavailable; tap Test spoken reply to retry");
                     ListeningService.spokenResponseFinished(this, pendingSpeechId);
-                pendingSpeech = null;
-                pendingSpeechId = null;
-            }
-        });
+                    pendingSpeech = null;
+                    pendingSpeechId = null;
+                    ++speechGeneration;
+                    if (speech != null) { speech.shutdown(); speech = null; }
+                    speechReady = false;
+                    return;
+                }
+                speechReady = applyVoiceChoice();
+                if (!speechReady) {
+                    ListeningService.spokenResponseFinished(this, pendingSpeechId);
+                    pendingSpeech = null;
+                    pendingSpeechId = null;
+                    ++speechGeneration;
+                    speech.shutdown();
+                    speech = null;
+                    return;
+                }
+                speech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override public void onStart(String id) { }
+                    @Override public void onDone(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                    @Override public void onError(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                    @Override public void onStop(String id, boolean interrupted) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                });
+                if (pendingSpeech != null) {
+                    if (speech.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
+                        ListeningService.spokenResponseFinished(this, pendingSpeechId);
+                    pendingSpeech = null;
+                    pendingSpeechId = null;
+                }
+            });
+        }
     }
 
-    private void applyVoiceChoice() {
-        if (!StationVoiceProfile.apply(this, speech) && StationVoiceProfile.softer(this))
-            showVoiceStatus("Alternate voice unavailable; using system voice");
+    private void watchActivitySpeech(String id) {
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (!ListeningService.isSpokenResponsePending(id)) return;
+            // A missing TTS callback cannot hold Speak hostage forever. Never
+            // release the hold unless this Activity's engine confirms stop.
+            if (speech != null && speech.stop() != TextToSpeech.SUCCESS) {
+                android.os.Process.killProcess(android.os.Process.myPid());
+                return;
+            }
+            ++speechGeneration;
+            if (speech != null) { speech.shutdown(); speech = null; }
+            speechReady = false;
+            pendingSpeech = null;
+            pendingSpeechId = null;
+            ListeningService.cancelSpokenResponses(this);
+            showVoiceStatus("Speech timed out; voice stopped. Tap spoken reply to retry");
+        }, 15000);
+    }
+
+    private boolean applyVoiceChoice() {
+        if (StationVoiceProfile.apply(this, speech)) return true;
+        showVoiceStatus(StationVoiceProfile.model(this)
+            ? "Offline model voice unavailable; no system-voice fallback"
+            : "System voice unavailable");
+        return false;
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == MICROPHONE_REQUEST) {
-            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startListening();
-            else showVoiceStatus("Microphone permission denied; Speak still works");
+        if (requestCode == SPEAK_PERMISSION_REQUEST) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startLocalInput();
+            else showVoiceStatus("Microphone permission denied; Speak remains off");
             return;
         }
-        if (requestCode == 43 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) openLiveCamera();
+        if (requestCode == MICROPHONE_REQUEST) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startListening();
+            else showVoiceStatus("Microphone permission denied; hands-free remains off");
+            return;
+        }
+        if (requestCode == 43 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) openLiveCamera(requestedFront);
     }
 
     @Override protected void onPause() {
+        stopLocalInput();
         resumed = false;
         foreground = new WeakReference<>(null);
         if (liveCameraDialog != null) liveCameraDialog.dismiss();
@@ -607,6 +790,30 @@ public final class MainActivity extends Activity {
         } catch (RuntimeException e) {
             android.widget.Toast.makeText(this, "Audio test unavailable", android.widget.Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void openMusic() {
+        open(new Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/")));
+    }
+
+    private void mediaKey(int code) {
+        AudioManager audio = getSystemService(AudioManager.class);
+        if (audio == null) {
+            showVoiceStatus("Android media controls unavailable");
+            return;
+        }
+        // isMusicActive() is false while paused; still send Play so the
+        // previous media session has a chance to resume.
+        if (code != KeyEvent.KEYCODE_MEDIA_PLAY && !audio.isMusicActive()) {
+            showVoiceStatus("No active music playback; open music and select a track first");
+            return;
+        }
+        long at = SystemClock.uptimeMillis();
+        audio.dispatchMediaKeyEvent(new KeyEvent(at, at, KeyEvent.ACTION_DOWN, code, 0));
+        audio.dispatchMediaKeyEvent(new KeyEvent(at, at, KeyEvent.ACTION_UP, code, 0));
+        showVoiceStatus(code == KeyEvent.KEYCODE_MEDIA_PLAY
+            ? "Play requested; if nothing starts, open music and choose a track"
+            : "Media key sent to Android's active player");
     }
 
     private void open(Intent intent) {
@@ -653,6 +860,8 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        stopLocalInput();
+        if (tapModel != null) { tapModel.close(); tapModel = null; }
         boolean speechStopped = speech == null || speech.stop() == TextToSpeech.SUCCESS;
         if (speech != null) speech.shutdown();
         if (speechStopped) ListeningService.cancelSpokenResponses(this);

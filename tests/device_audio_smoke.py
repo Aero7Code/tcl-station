@@ -35,9 +35,11 @@ tap_node("Studio / Audio")
 assert any(n.get("text") == "Test audio (short beep)" for n in nodes()), "Missing Test audio button"
 assert any(n.get("text") == "Test spoken reply" for n in nodes()), "Missing TTS test button"
 labels = {n.get("text") for n in nodes()}
-assert "Voice: alternate (tap for original)" in labels or "Voice: original (tap for alternate)" in labels
-original = "Voice: alternate (tap for original)" if "Voice: alternate (tap for original)" in labels else "Voice: original (tap for alternate)"
-other = "Voice: original (tap for alternate)" if original.startswith("Voice: alternate") else "Voice: alternate (tap for original)"
+system_label = "Voice: system (tap for offline model)"
+model_label = "Voice: offline model (tap for system)"
+assert system_label in labels or model_label in labels
+original = model_label if model_label in labels else system_label
+other = system_label if original == model_label else model_label
 tap_node(original)
 assert any(n.get("text") == other for n in nodes()), "TTS voice switch did not update"
 adb("shell", "am", "force-stop", "com.aero.tclstation")

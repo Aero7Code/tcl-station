@@ -39,8 +39,9 @@ final class LiveCameraDialog implements TextureView.SurfaceTextureListener {
     private boolean closed;
     private boolean front;
 
-    private LiveCameraDialog(Activity activity, Runnable onSpeak) {
+    private LiveCameraDialog(Activity activity, Runnable onSpeak, boolean front) {
         this.activity = activity;
+        this.front = front;
         LinearLayout body = new LinearLayout(activity);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(12), dp(8), dp(12), dp(8));
@@ -55,16 +56,7 @@ final class LiveCameraDialog implements TextureView.SurfaceTextureListener {
         switcher = new Button(activity);
         switcher.setText("Switch camera");
         switcher.setEnabled(false);
-        switcher.setOnClickListener(v -> {
-            switcher.setEnabled(false);
-            CameraDevice previous = camera;
-            if (previous != null) handoff.await(previous);
-            closeCamera();
-            front = !front;
-            status.setText("Switching to " + (front ? "front" : "back") + " camera…");
-            // close() returns before the hardware is free; wait for this device's onClosed.
-            if (previous == null && texture.isAvailable()) open(texture.getSurfaceTexture());
-        });
+        switcher.setOnClickListener(v -> selectFacing(!this.front));
         Button speak = new Button(activity);
         speak.setText("Speak");
         speak.setAllCaps(false);
@@ -81,12 +73,26 @@ final class LiveCameraDialog implements TextureView.SurfaceTextureListener {
         dialog.setOnDismissListener(d -> close());
     }
 
-    static AlertDialog show(Activity activity, Runnable onSpeak) {
-        LiveCameraDialog view = new LiveCameraDialog(activity, onSpeak);
+    static LiveCameraDialog show(Activity activity, Runnable onSpeak, boolean front) {
+        LiveCameraDialog view = new LiveCameraDialog(activity, onSpeak, front);
         view.dialog.show();
         view.texture.setSurfaceTextureListener(view);
         if (view.texture.isAvailable()) view.open(view.texture.getSurfaceTexture());
-        return view.dialog;
+        return view;
+    }
+
+    AlertDialog dialog() { return dialog; }
+
+    void selectFacing(boolean front) {
+        if (closed || this.front == front) return;
+        switcher.setEnabled(false);
+        CameraDevice previous = camera;
+        if (previous != null) handoff.await(previous);
+        closeCamera();
+        this.front = front;
+        status.setText("Switching to " + (front ? "front" : "back") + " camera…");
+        // Wait for Camera2 onClosed before acquiring the other lens.
+        if (previous == null && texture.isAvailable()) open(texture.getSurfaceTexture());
     }
 
     private int dp(int value) {

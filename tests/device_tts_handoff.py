@@ -36,10 +36,12 @@ def mic_active():
 adb("shell", "am", "start", "-S", "-n", "com.aero.tclstation/.MainActivity")
 tap("›")
 tap("Studio / Audio")
-had_original = any(n.get("text") == "Voice: original (tap for alternate)" for n in nodes())
-if had_original:
-    tap("Voice: original (tap for alternate)")
-assert any(n.get("text") == "Voice: alternate (tap for original)" for n in nodes()), "Could not select alternate voice"
+system_label = "Voice: system (tap for offline model)"
+model_label = "Voice: offline model (tap for system)"
+had_system = any(n.get("text") == system_label for n in nodes())
+if had_system:
+    tap(system_label)
+assert any(n.get("text") == model_label for n in nodes()), "Could not select model voice"
 adb("shell", "pm", "grant", "com.aero.tclstation", "android.permission.RECORD_AUDIO")
 tap("Hands-free: Off")
 try:
@@ -58,10 +60,11 @@ try:
         time.sleep(0.3)
     assert mic_active(), "Microphone did not resume after TTS"
     log = adb("logcat", "-d")
-    assert "Synthesis request for locale eng-USA and name en-us-x-sfg-local" in log, "Alternate TTS request was not seen on this Google TTS tablet"
-    print("PASS alternate local voice requested; TTS pauses hands-free microphone and capture resumes")
+    assert "text: Station voice test." in log, "Sherpa model engine did not synthesize the test reply"
+    assert "engineSpeed: 1.08" in log, "Model speed request was not applied by Sherpa"
+    print("PASS Sherpa model synthesized reply at 1.08x; microphone paused and resumed")
 finally:
     if any(n.get("text") == "Hands-free: On" for n in nodes()):
         tap("Hands-free: On")
-    if had_original:
-        tap("Voice: alternate (tap for original)")
+    if had_system:
+        tap(model_label)

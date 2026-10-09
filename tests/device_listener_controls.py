@@ -42,11 +42,34 @@ services = run('shell','dumpsys','activity','services','com.aero.tclstation')
 assert 'ListeningService' in services, 'Listener is not an Android foreground service'
 assert station_mic_active(), 'Station does not have a live tablet microphone capture'
 tap('Speak')
-time.sleep(1)
-assert not station_mic_active(), 'Push-to-talk must release Station microphone before external recognizer'
-run('shell','input','keyevent','4')
-time.sleep(1.5)
-assert station_mic_active(), 'Station microphone did not resume after push-to-talk cancellation'
+deadline = time.monotonic() + 90
+seen = set()
+while time.monotonic() < deadline:
+    entries = nodes()
+    labels = {n.get('text') for n in entries}
+    seen.update(label for label in labels if label and label.startswith('Speak'))
+    active = next((n for n in entries if n.get('text') in {'Speak: listening', 'Speak: hearing'}), None)
+    if active is not None: break
+else:
+    raise AssertionError(f'Local Speak never began listening with hands-free enabled; seen {seen}')
+assert station_mic_active(), 'Local Speak failed to take over Station microphone'
+entries = nodes()
+active = next((n for n in entries if n.get('text') in {'Speak: listening', 'Speak: hearing'}), None)
+if active is not None:
+    x1,y1,x2,y2=map(int,re.findall(r'\d+',active.get('bounds')))
+    run('shell','input','tap',str((x1+x2)//2),str((y1+y2)//2))
+else:
+    assert any(n.get('text') == 'Speak' for n in entries), 'Speak ended in an unexpected state'
+# A one-shot may time out while ADB collects the UI and audio state; either
+# explicit cancellation or normal timeout must release back to hands-free.
+deadline = time.monotonic() + 12
+while time.monotonic() < deadline:
+    labels = {n.get('text') for n in nodes()}
+    if 'Speak' in labels and 'Hands-free: On' in labels and station_mic_active():
+        break
+    time.sleep(.4)
+else:
+    raise AssertionError('Hands-free microphone did not resume after local Speak cancellation')
 run('shell','input','keyevent','26')  # Screen off, not a service stop.
 time.sleep(2)
 assert 'ListeningService' in run('shell','dumpsys','activity','services','com.aero.tclstation')

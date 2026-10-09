@@ -7,6 +7,12 @@ public final class VoiceCommandTest {
             throw new AssertionError(phrase + " => " + cmd.action + "/" + cmd.seconds + ", expected " + expected + "/" + seconds);
     }
 
+    private static void expectAlarm(String phrase, int hour, int minute) {
+        VoiceCommand cmd = VoiceCommand.parse(phrase);
+        if (cmd.action != VoiceCommand.Action.SET_ALARM || cmd.hour != hour || cmd.minute != minute)
+            throw new AssertionError(phrase + " => " + cmd.action + " " + cmd.hour + ":" + cmd.minute);
+    }
+
     public static void main(String[] args) throws Exception {
         expect("What's the weather?", VoiceCommand.Action.WEATHER, 0);
         expect("Show me the weather", VoiceCommand.Action.WEATHER, 0);
@@ -18,7 +24,18 @@ public final class VoiceCommandTest {
         expect("Set timer for 120 minutes", VoiceCommand.Action.SET_TIMER, 7200);
         expect("Open timers", VoiceCommand.Action.TIMERS, 0);
         expect("Show alarms", VoiceCommand.Action.ALARMS, 0);
-        expect("Play music", VoiceCommand.Action.MUSIC, 0);
+        expect("Open front camera", VoiceCommand.Action.CAMERA_FRONT, 0);
+        expect("Open back camera", VoiceCommand.Action.CAMERA, 0);
+        expect("What's today's weather", VoiceCommand.Action.WEATHER, 0);
+        expect("What is the weather like today", VoiceCommand.Action.WEATHER, 0);
+        expect("Pause music", VoiceCommand.Action.PAUSE_MEDIA, 0);
+        expect("Pause song", VoiceCommand.Action.PAUSE_MEDIA, 0);
+        expect("Skip song", VoiceCommand.Action.NEXT_MEDIA, 0);
+        expect("Play music", VoiceCommand.Action.PLAY_MEDIA, 0);
+        expectAlarm("Set alarm for 7:30 AM", 7, 30);
+        expectAlarm("Wake me up at seven thirty pm", 19, 30);
+        expect("Set alarm for 25 pm", VoiceCommand.Action.UNKNOWN, 0);
+        expect("Set alarm for noon", VoiceCommand.Action.UNKNOWN, 0);
         expect("Go home", VoiceCommand.Action.HOME, 0);
         expect("Help", VoiceCommand.Action.HELP, 0);
         expect("Record a video", VoiceCommand.Action.UNKNOWN, 0);
@@ -34,7 +51,13 @@ public final class VoiceCommandTest {
         expect("set a three minute timer", VoiceCommand.Action.SET_TIMER, 180);
         expect("my timers", VoiceCommand.Action.TIMERS, 0);
         expect("my alarms", VoiceCommand.Action.ALARMS, 0);
-        expect("launch YouTube Music", VoiceCommand.Action.MUSIC, 0);
+        expect("open back camera", VoiceCommand.Action.CAMERA, 0);
+        expect("open front camera", VoiceCommand.Action.CAMERA_FRONT, 0);
+        expect("play music", VoiceCommand.Action.PLAY_MEDIA, 0);
+        expect("open music", VoiceCommand.Action.MUSIC, 0);
+        expect("pause music", VoiceCommand.Action.PAUSE_MEDIA, 0);
+        expect("skip song", VoiceCommand.Action.NEXT_MEDIA, 0);
+        expectAlarm("set alarm for seven am", 7, 0);
         expect("back to home", VoiceCommand.Action.HOME, 0);
         expect("stop listening now", VoiceCommand.Action.STOP_LISTENING, 0);
         if (VoiceCommand.catalog().size() != 100) throw new AssertionError("Expected exactly 100 curated phrases");
@@ -45,17 +68,19 @@ public final class VoiceCommandTest {
             expect(phrase, expected.action, expected.seconds);
             HandsFreeGate prefixed = new HandsFreeGate();
             VoiceCommand oneShot = prefixed.accept("Hey Station " + phrase, 1000);
-            if (oneShot.action != expected.action || oneShot.seconds != expected.seconds)
+            if (oneShot.action != expected.action || oneShot.seconds != expected.seconds
+                || oneShot.hour != expected.hour || oneShot.minute != expected.minute)
                 throw new AssertionError("Prefixed phrase failed: " + phrase);
             HandsFreeGate followUp = new HandsFreeGate();
             followUp.accept("Hey Station", 1000);
             VoiceCommand second = followUp.accept(phrase, 2000);
-            if (second.action != expected.action || second.seconds != expected.seconds)
+            if (second.action != expected.action || second.seconds != expected.seconds
+                || second.hour != expected.hour || second.minute != expected.minute)
                 throw new AssertionError("Follow-up failed: " + phrase);
             counts.put(expected.action, counts.getOrDefault(expected.action, 0) + 1);
         }
-        if (counts.size() != 10 || counts.values().stream().anyMatch(n -> n != 10))
-            throw new AssertionError("Expected ten phrases per supported action: " + counts);
+        if (counts.size() != 15 || counts.values().stream().anyMatch(n -> n < 4))
+            throw new AssertionError("Expected 100 phrases across 15 supported actions: " + counts);
         java.util.Set<String> documented = new java.util.HashSet<>();
         for (String line : java.nio.file.Files.readAllLines(java.nio.file.Paths.get("VOICE_COMMANDS.md"))) {
             if (line.startsWith("- “")) {
@@ -66,6 +91,6 @@ public final class VoiceCommandTest {
         }
         if (!documented.equals(VoiceCommand.catalog().keySet()))
             throw new AssertionError("Documentation and runtime catalog differ");
-        System.out.println("PASS 100 documented phrases across ten supported actions, prefix and follow-up; no recording command");
+        System.out.println("PASS 100 documented phrases across 15 supported actions, prefix and follow-up; no recording command");
     }
 }

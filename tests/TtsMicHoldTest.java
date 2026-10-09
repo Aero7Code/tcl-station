@@ -63,6 +63,19 @@ public final class TtsMicHoldTest {
             "Activity speech must acquire a hold even when hands-free is off");
         check(source.contains("private static final TtsMicHold speechHold") && source.contains("speechHold.heldIds()"),
             "A new service must inherit Activity speech already in progress");
+        check(source.contains("static boolean isSpokenResponsePending(String id)")
+            && source.contains("return speechHold.isHeld(id);"),
+            "Standalone reply watchdog must inspect the actual held utterance");
+        int watchdogStart = activitySource.indexOf("private void watchActivitySpeech(");
+        check(watchdogStart >= 0, "Missing Activity-only TTS watchdog");
+        String activityWatchdog = activitySource.substring(watchdogStart,
+            activitySource.indexOf("private boolean applyVoiceChoice()"));
+        check(activitySource.contains("watchActivitySpeech(id);")
+            && activityWatchdog.contains("ListeningService.isSpokenResponsePending(id)")
+            && activityWatchdog.contains("speech.stop()")
+            && activityWatchdog.contains("ListeningService.cancelSpokenResponses(this)")
+            && activityWatchdog.contains("android.os.Process.killProcess(android.os.Process.myPid())"),
+            "A stalled Activity-only TTS reply must stop its engine before releasing holds, or fail closed");
         String activityTeardown = activitySource.substring(activitySource.indexOf("@Override protected void onDestroy()"));
         check(!activityTeardown.contains("spokenResponseFinished") && activityTeardown.contains("cancelSpokenResponses(this)"),
             "Activity teardown must release only its own hold, after TTS is stopped");
@@ -138,6 +151,14 @@ public final class TtsMicHoldTest {
                 check(finish(activity, second) && mayResume(), "Only owning callback releases final response");
                 check(!finish(activity, first), "Duplicate callback must be harmless");
                 System.out.println("PASS overlapping utterances and stale callbacks");
+
+                fresh();
+                call("pauseForPushToTalk", new Class<?>[]{});
+                check(!waiting() && !mayResume(),
+                    "Speak while hands-free is off must still block a newly started service");
+                call("resumeAfterPushToTalk", new Class<?>[]{});
+                check(mayResume(), "Ending Speak must release a pre-service pause");
+                System.out.println("PASS Speak started before hands-free service blocks its microphone");
 
                 fresh();
                 String speech = begin(service, "station-hands-free");

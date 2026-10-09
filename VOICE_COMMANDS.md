@@ -1,11 +1,10 @@
 # 100 Station voice phrases
 
-These are **100 short ways to invoke ten existing actions**, not 100 separate device integrations. For hands-free, say “Hey Station” followed by any phrase below in one utterance, or say “Hey Station” alone and give one phrase within **35 seconds**. “Station” plus a phrase also works. The **Speak** push-to-talk button accepts the phrases without a wake prefix. Matching happens locally after a *final* speech transcript; parser tests do **not** establish that the tablet will acoustically recognize every phrase. Short, unambiguous phrases generally make better first attempts.
+These are **100 ways to invoke 15 bounded actions**, not 100 separately trained skills or device integrations. Enable **Hands-free** explicitly; it keeps the tablet microphone active while its foreground service runs, even with the screen off. Say “Hey Station” alone, wait for “I'm listening,” and give commands during the following **45 seconds**. Multiple different commands can be used before the window expires; saying “Hey Station” again resets the window. “Hey Station” plus a command in one utterance also works. **Speak** accepts a phrase without a wake call. Repeating the same phrase within five seconds is suppressed. The catalog matches final local Vosk transcripts, not raw audio; no parser test guarantees that Vosk heard a phrase correctly. After a wake, an unhandled final transcript is shown briefly on Station's screen to help diagnose what Vosk heard; it is not saved or put into the notification. Station saves no audio or transcripts.
 
-When Station is backgrounded, only time, weather, and the wake acknowledgment have spoken responses; other actions ask you to open Station. “Stop listening” always stops the listener; it need not speak before stopping. Timer/alarms and music hand off to external apps. No camera recording, playback control, security alerting, or arbitrary actions are implied.
+**Limits:** the camera is a live **on-tablet** preview, not a remote security feed; no footage is saved. A set-alarm or set-timer request opens Android Clock for review rather than silently scheduling it. Play sends an Android media key even if audio is paused, so a paused player may resume, but playback is not guaranteed; pause/skip require active playback. Open music merely launches YouTube Music. With Station in the background, wake, time, and cached weather get spoken answers and media keys can be sent to Android's active player; other actions ask you to open Station. A missing app or media session can prevent the requested action.
 
-## Weather — Speaks current weather when Station is open, or the last cached weather while it is in the background (possibly stale).
-
+## Weather — Current configured-area weather when Station is open; the last cached report may be stale in the background.
 - “current weather”
 - “weather right now”
 - “whats the weather”
@@ -16,120 +15,123 @@ When Station is backgrounded, only time, weather, and the wake acknowledgment ha
 - “whats it like outside”
 - “give me the weather”
 - “check the weather”
+- “whats todays weather”
+- “what is the weather like today”
+- “show todays weather”
+- “weather today”
 
-## Time — Speaks the current Denver time.
-
+## Time — Denver time.
 - “what time is it”
 - “whats the time”
 - “current time”
 - “time right now”
 - “tell me the time”
-- “show me the time”
 - “denver time”
-- “time in denver”
-- “give me the time”
-- “what time is it in denver”
 
-## Camera — Opens a live, on-tablet preview only while Station is foreground; nothing is recorded.
+## Front camera — Live on-tablet preview, foreground only.
+- “open front camera”
+- “show front camera”
+- “front camera”
+- “open the front camera”
+- “show me the front camera”
+- “switch to front camera”
+- “front camera view”
 
+## Back camera — Live on-tablet preview, foreground only.
 - “open camera”
-- “show camera”
-- “start camera”
-- “launch camera”
-- “camera view”
-- “show the camera”
-- “open the camera”
+- “open back camera”
+- “show back camera”
+- “back camera”
 - “turn on camera”
-- “bring up camera”
-- “view camera”
+- “switch to back camera”
+- “show camera”
 
-## Close Camera — Closes the on-tablet camera preview and confirms it.
-
+## Close camera — Release the preview.
 - “close camera”
 - “hide camera”
 - “exit camera”
-- “leave camera”
-- “dismiss camera”
 - “close the camera”
-- “hide the camera”
-- “exit the camera”
-- “leave the camera”
 - “turn off camera”
 
-## Set Timer — Opens an Android Clock timer prompt with the requested duration; the Clock app owns the timer.
+## Set timer — Opens Android Clock with the duration, subject to review. Numeric durations up to two hours also work, e.g. “set timer for 30 seconds.”
+- “set a one minute timer”
+- “set a two minute timer”
+- “set a three minute timer”
+- “set a five minute timer”
+- “set a ten minute timer”
+- “set a fifteen minute timer”
+- “set a twenty minute timer”
+- “set a thirty minute timer”
 
-- “set a one minute timer” (1 min timer)
-- “set a two minute timer” (2 min timer)
-- “set a three minute timer” (3 min timer)
-- “set a five minute timer” (5 min timer)
-- “set a ten minute timer” (10 min timer)
-- “set a fifteen minute timer” (15 min timer)
-- “set a twenty minute timer” (20 min timer)
-- “set a twenty five minute timer” (25 min timer)
-- “set a thirty minute timer” (30 min timer)
-- “set a sixty minute timer” (60 min timer)
-
-## Timers — Opens an external Clock timer screen; does not create a timer.
-
+## Timers — Open the Android Clock timer screen.
 - “open timers”
 - “show timers”
-- “view timers”
 - “my timers”
 - “timer list”
-- “see my timers”
-- “go to timers”
-- “bring up timers”
-- “timers please”
-- “open the timer screen”
 
-## Alarms — Opens an external Clock alarm screen; does not create an alarm.
+## Set alarm — Opens Android Clock for review, not a silent alarm. Also accepts a specified 12-hour time such as “set alarm for 7:30 AM” or “wake me up at seven thirty pm”; no date or recurrence is inferred.
+- “set alarm for six am”
+- “set alarm for seven am”
+- “set alarm for eight am”
+- “set alarm for nine am”
+- “set alarm for six pm”
+- “set alarm for seven pm”
+- “set alarm for eight pm”
+- “set alarm for nine pm”
 
+## Alarms — Open Android Clock's alarm screen.
 - “open alarms”
 - “show alarms”
-- “view alarms”
 - “my alarms”
 - “alarm list”
-- “see my alarms”
-- “go to alarms”
-- “bring up alarms”
-- “alarms please”
-- “open the alarm screen”
+- “set alarms”
+- “show my alarms”
 
-## Music — Opens YouTube Music in an available app/browser; does not control playback.
-
+## Open music — Open YouTube Music in an app or browser; no autoplay guarantee.
 - “open music”
 - “show music”
 - “launch music”
-- “music app”
 - “open youtube music”
 - “launch youtube music”
-- “show youtube music”
-- “go to music”
-- “bring up music”
-- “music please”
 
-## Home — Returns to the Station dashboard.
+## Play or resume — Send a Play key to Android; a paused player may resume, but if nothing starts choose a track in Music.
+- “play music”
+- “resume music”
+- “play song”
+- “resume song”
+- “start music”
+- “continue music”
 
+## Pause — Send a Pause key to Android's active media session.
+- “pause music”
+- “pause song”
+- “pause the music”
+- “pause playback”
+- “stop music”
+- “stop the song”
+
+## Next — Send a Next key to Android's active media session.
+- “skip song”
+- “next song”
+- “skip this song”
+- “play next song”
+- “next track”
+- “skip track”
+- “skip the song”
+
+## Station home — Return to page one.
 - “go home”
 - “show home”
-- “open home”
-- “home screen”
 - “station home”
-- “go to station home”
-- “show station home”
 - “return home”
 - “back to home”
 - “take me home”
 
-## Stop Listening — Stops hands-free listening immediately; it does not promise a spoken reply.
-
+## Stop hands-free — Turn off the persistent listener; Speak remains usable.
 - “stop listening”
-- “quit listening”
 - “end listening”
-- “stop voice listening”
-- “end voice listening”
 - “turn off voice listening”
-- “disable voice listening”
 - “stop listening now”
-- “stop listening please”
 - “stop the voice listener”
+
+“Help,” “what can you do,” and a bounded timer grammar also work outside the 100 curated phrases. An unknown phrase never authorizes arbitrary tablet control.
