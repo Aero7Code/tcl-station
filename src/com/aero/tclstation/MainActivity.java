@@ -1,6 +1,7 @@
 package com.aero.tclstation;
 
 import android.app.Activity;
+import android.app.role.RoleManager;
 import android.Manifest;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
@@ -18,6 +19,10 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.AlarmClock;
 import android.provider.MediaStore;
+import android.provider.Settings;
+import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -35,6 +40,12 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.Locale;
+import java.util.TimeZone;
+import java.lang.ref.WeakReference;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -56,6 +67,23 @@ public final class MainActivity extends Activity {
     private TextView weatherSummary;
     private Button refresh;
     private android.app.AlertDialog liveCameraDialog;
+    private static final int VOICE_REQUEST = 91;
+    private static final int HOME_REQUEST = 92;
+    private static final int MICROPHONE_REQUEST = 44;
+    private static WeakReference<MainActivity> foreground = new WeakReference<>(null);
+    private VoiceCommand pendingVoice;
+    private boolean resumed;
+    private boolean pushToTalkActive;
+    private TextToSpeech speech;
+    private boolean speechReady;
+    private String pendingSpeech;
+    private String pendingSpeechId;
+    private Button handsFree;
+
+    static MainActivity foregroundActivity() {
+        MainActivity activity = foreground.get();
+        return activity != null && activity.resumed ? activity : null;
+    }
     private String weatherText = "Weather: loading…";
     private boolean weatherLoading;
     private int pageWidth;
@@ -145,8 +173,10 @@ public final class MainActivity extends Activity {
             int end = p == 0 ? 3 : p == 1 ? 6 : 7;
             for (int i = start; i < end; i++) addPanel(cards, i);
             if (p == 2) {
-                TextView note = text(content, "This is a launcher, not a recording or automation service. Future tools are shown honestly until connected.", 16, MUTED, false);
-                note.setPadding(dp(6), dp(18), dp(6), dp(4));
+                TextView note = text(content, "Choose Station as Home. Android Home settings can restore your old launcher.", 16, MUTED, false);
+                note.setPadding(dp(6), dp(3), dp(6), dp(4));
+                action(content, "Make Station Home", this::requestHomeRole);
+                action(content, "Home app settings", this::openHomeSettings);
             }
         }
         LinearLayout footer = new LinearLayout(this);
@@ -158,6 +188,22 @@ public final class MainActivity extends Activity {
         pageLabel.setGravity(Gravity.CENTER);
         footer.removeView(pageLabel);
         footer.addView(pageLabel, new LinearLayout.LayoutParams(0, -2, 1));
+        handsFree = new Button(this);
+        handsFree.setAllCaps(false);
+        handsFree.setTextSize(13);
+        handsFree.setTextColor(BACKGROUND);
+        handsFree.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT[0]));
+        handsFree.setOnClickListener(v -> toggleListening());
+        footer.addView(handsFree, new LinearLayout.LayoutParams(dp(166), dp(52)));
+        refreshListeningButton();
+        Button speak = new Button(this);
+        speak.setText("Speak");
+        speak.setAllCaps(false);
+        speak.setContentDescription("Speak a Station command; microphone is off until tapped");
+        speak.setTextColor(BACKGROUND);
+        speak.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT[0]));
+        speak.setOnClickListener(v -> startVoiceInput());
+        footer.addView(speak, new LinearLayout.LayoutParams(dp(130), dp(52)));
         navButton(footer, "›", () -> goToPage(Math.min(2, currentPage() + 1)));
         horizontal.setOnScrollChangeListener((v, x, y, oldX, oldY) -> updatePageLabel());
         updatePageLabel();
@@ -184,14 +230,14 @@ public final class MainActivity extends Activity {
             horizontal.post(() -> horizontal.scrollTo(x, 0));
         });
         LinearLayout.LayoutParams position = landscape
-            ? new LinearLayout.LayoutParams(0, dp(landscape ? 348 : 210), expanded ? 1.8f : 1f)
+            ? new LinearLayout.LayoutParams(0, dp(index == 6 ? (expanded ? 194 : 136) : 348), expanded ? 1.8f : 1f)
             : new LinearLayout.LayoutParams(-1, -2);
         position.setMargins(dp(4), dp(3), dp(4), dp(landscape ? 3 : 10));
         cards.addView(card, position);
         TextView number = text(card, String.format(java.util.Locale.US, "%02d  /  %s", index + 1, SUBTITLES[index]), 12, ACCENT[index], true);
         number.setLetterSpacing(.08f);
         TextView title = text(card, TITLES[index], expanded ? 27 : 25, Color.WHITE, true);
-        title.setPadding(0, dp(10), 0, dp(4));
+        title.setPadding(0, dp(index == 6 ? 4 : 10), 0, dp(4));
         if (index == 0) {
             weatherSummary = text(card, weatherText, expanded ? 20 : 17, Color.WHITE, false);
             weatherSummary.setMaxLines(expanded ? 3 : 4);
@@ -213,10 +259,10 @@ public final class MainActivity extends Activity {
                 case 5: summary = "Live viewing only • nothing saved."; break;
                 default: summary = "Integration: NOT IMPLEMENTED";
             }
-            text(card, summary, 17, MUTED, false);
+            text(card, summary, index == 6 ? 15 : 17, MUTED, false);
         }
         TextView hint = text(card, expanded ? "DOUBLE TAP CARD TO SHRINK" : "TAP TO EXPAND  ↗", 12, ACCENT[index], true);
-        hint.setPadding(0, dp(15), 0, dp(3));
+        hint.setPadding(0, dp(index == 6 ? 4 : 15), 0, dp(3));
         if (expanded) addDetails(card, index);
         if (!landscape) card.setMinimumHeight(dp(expanded ? 300 : 166));
     }
@@ -309,7 +355,11 @@ public final class MainActivity extends Activity {
     private int currentPage() { return Math.max(0, Math.min(2, Math.round((float) horizontal.getScrollX() / pageWidth))); }
     private void goToPage(int target) { page = target; horizontal.smoothScrollTo(page * pageWidth, 0); updatePageLabel(); }
     private void updatePageLabel() {
-        if (pageLabel != null && horizontal != null) pageLabel.setText((currentPage() + 1) + " / 3    •    SWIPE LEFT / RIGHT");
+        if (pageLabel == null || horizontal == null) return;
+        String count = (currentPage() + 1) + " / 3";
+        boolean portrait = getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT;
+        pageLabel.setText(portrait ? count : count + "    •    SWIPE LEFT / RIGHT");
+        pageLabel.setContentDescription(count + "; swipe left or right to change page");
     }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
 
@@ -319,15 +369,202 @@ public final class MainActivity extends Activity {
             return;
         }
         if (liveCameraDialog != null && liveCameraDialog.isShowing()) return;
-        liveCameraDialog = LiveCameraDialog.show(this);
+        liveCameraDialog = LiveCameraDialog.show(this, this::startVoiceInput);
+    }
+
+    private void startVoiceInput() {
+        pushToTalkActive = ListeningService.isEnabled();
+        ListeningService.pauseForPushToTalk();
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Try: show weather, open camera, set timer for five minutes");
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        try { startActivityForResult(intent, VOICE_REQUEST); }
+        catch (ActivityNotFoundException | SecurityException e) {
+            pushToTalkActive = false;
+            ListeningService.resumeAfterPushToTalk();
+            showVoiceStatus("Speech recognition app unavailable");
+        }
+    }
+
+    private void toggleListening() {
+        if (ListeningService.isEnabled()) {
+            stopService(new Intent(this, ListeningService.class));
+            refreshListeningButton();
+        } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MICROPHONE_REQUEST);
+        } else startListening();
+    }
+
+    private void startListening() {
+        try {
+            startForegroundService(new Intent(this, ListeningService.class).setAction(ListeningService.ACTION_START));
+            handsFree.setText("Hands-free: Loading");
+        } catch (RuntimeException e) { showVoiceStatus("Hands-free could not start; use Speak instead"); }
+    }
+
+    void refreshListeningButton() {
+        if (handsFree == null) return;
+        boolean on = ListeningService.isEnabled();
+        handsFree.setText(on ? ListeningService.isCapturing() ? "Hands-free: On" : "Hands-free: Loading" : "Hands-free: Off");
+        handsFree.setContentDescription(on
+            ? "Continuous local microphone on. Tap to stop hands-free listening."
+            : "Microphone off. Tap to enable local hands-free listening, including while the screen is off.");
+    }
+
+    private void requestHomeRole() {
+        RoleManager roles = getSystemService(RoleManager.class);
+        if (roles == null || !roles.isRoleAvailable(RoleManager.ROLE_HOME)) {
+            openHomeSettings();
+        } else if (roles.isRoleHeld(RoleManager.ROLE_HOME)) {
+            showVoiceStatus("Station is already your Home app");
+        } else {
+            try { startActivityForResult(roles.createRequestRoleIntent(RoleManager.ROLE_HOME), HOME_REQUEST); }
+            catch (ActivityNotFoundException | SecurityException e) { openHomeSettings(); }
+        }
+    }
+
+    private void openHomeSettings() {
+        try { startActivity(new Intent(Settings.ACTION_HOME_SETTINGS)); }
+        catch (ActivityNotFoundException | SecurityException e) { open(new Intent(Settings.ACTION_SETTINGS)); }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == HOME_REQUEST) {
+            RoleManager roles = getSystemService(RoleManager.class);
+            showVoiceStatus(roles != null && roles.isRoleHeld(RoleManager.ROLE_HOME) ? "Station is now Home" : "Home app unchanged");
+            return;
+        }
+        if (requestCode != VOICE_REQUEST) return;
+        pushToTalkActive = false;
+        if (resultCode == RESULT_OK && data != null) {
+            ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if (results != null && !results.isEmpty()) {
+                VoiceCommand command = VoiceCommand.parse(results.get(0));
+                if (resumed) handleVoice(command);
+                else pendingVoice = command;
+            }
+        }
+        if (resumed) ListeningService.resumeAfterPushToTalk();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        resumed = true;
+        foreground = new WeakReference<>(this);
+        refreshListeningButton();
+        if (pendingVoice != null) {
+            VoiceCommand command = pendingVoice;
+            pendingVoice = null;
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (resumed) { handleVoice(command); ListeningService.resumeAfterPushToTalk(); }
+            });
+        } else if (!pushToTalkActive) ListeningService.resumeAfterPushToTalk();
+    }
+
+    void handleVoice(VoiceCommand command) {
+        switch (command.action) {
+            case WEATHER:
+                say(weatherText.replace("•", ", ").replace("\n", ". "));
+                break;
+            case TIME:
+                SimpleDateFormat format = new SimpleDateFormat("h:mm a", Locale.US);
+                format.setTimeZone(TimeZone.getTimeZone("America/Denver"));
+                say("It is " + format.format(new Date()) + " Denver time.");
+                break;
+            case CAMERA:
+                showVoiceStatus("Opening live camera");
+                openLiveCamera();
+                break;
+            case CLOSE_CAMERA:
+                if (liveCameraDialog != null) liveCameraDialog.dismiss();
+                liveCameraDialog = null;
+                say("Camera closed");
+                break;
+            case SET_TIMER:
+                showVoiceStatus("Opening timer for " + command.seconds + " seconds");
+                open(new Intent(AlarmClock.ACTION_SET_TIMER)
+                    .putExtra(AlarmClock.EXTRA_LENGTH, command.seconds)
+                    .putExtra(AlarmClock.EXTRA_SKIP_UI, false));
+                break;
+            case TIMERS:
+                open(new Intent(AlarmClock.ACTION_SHOW_TIMERS));
+                break;
+            case ALARMS:
+                open(new Intent(AlarmClock.ACTION_SHOW_ALARMS));
+                break;
+            case MUSIC:
+                open(new Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/")));
+                break;
+            case HOME:
+                if (liveCameraDialog != null) liveCameraDialog.dismiss();
+                liveCameraDialog = null;
+                goToPage(0);
+                say("Station home");
+                break;
+            case HELP:
+                say("For hands-free, say Station first. Try: Station show weather, Station set timer for five minutes, or Station stop listening. The Speak button still works without Station.");
+                break;
+            case STOP_LISTENING:
+                stopService(new Intent(this, ListeningService.class));
+                say("Hands-free listening stopped");
+                break;
+            default:
+                say("Command not recognized. Say help for the available commands.");
+        }
+    }
+
+    void showVoiceStatus(String message) {
+        android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    private void say(String message) {
+        showVoiceStatus(message);
+        String id = ListeningService.beginSpokenResponse(this);
+        if (speechReady && speech != null) {
+            if (speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR)
+                ListeningService.spokenResponseFinished(this, id);
+            return;
+        }
+        if (pendingSpeechId != null) ListeningService.spokenResponseFinished(this, pendingSpeechId);
+        pendingSpeech = message;
+        pendingSpeechId = id;
+        if (speech == null) speech = new TextToSpeech(this, status -> {
+            if (status != TextToSpeech.SUCCESS || speech == null) {
+                ListeningService.spokenResponseFinished(this, pendingSpeechId);
+                return;
+            }
+            speechReady = speech.setLanguage(Locale.US) >= 0;
+            if (!speechReady) { ListeningService.spokenResponseFinished(this, pendingSpeechId); return; }
+            speech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String id) { }
+                @Override public void onDone(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                @Override public void onError(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                @Override public void onStop(String id, boolean interrupted) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+            });
+            if (speechReady && pendingSpeech != null) {
+                if (speech.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
+                    ListeningService.spokenResponseFinished(this, pendingSpeechId);
+                pendingSpeech = null;
+                pendingSpeechId = null;
+            }
+        });
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == MICROPHONE_REQUEST) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startListening();
+            else showVoiceStatus("Microphone permission denied; Speak still works");
+            return;
+        }
         if (requestCode == 43 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) openLiveCamera();
     }
 
     @Override protected void onPause() {
+        resumed = false;
+        foreground = new WeakReference<>(null);
         if (liveCameraDialog != null) liveCameraDialog.dismiss();
         liveCameraDialog = null;
         super.onPause();
@@ -379,6 +616,7 @@ public final class MainActivity extends Activity {
                     ? StationConfig.NAME + ": " + value.temperatureF + "°F  •  " + value.description + "\nAs of " + value.observedTime + " local time"
                     : "Weather unavailable — check connection and retry";
                 weatherLoading = false;
+                getSharedPreferences("station", MODE_PRIVATE).edit().putString("last_weather", weatherText).apply();
                 if (weatherSummary != null) weatherSummary.setText(weatherText);
                 if (refresh != null) refresh.setEnabled(true);
             });
@@ -386,7 +624,13 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        boolean speechStopped = speech == null || speech.stop() == TextToSpeech.SUCCESS;
+        if (speech != null) speech.shutdown();
+        if (speechStopped) ListeningService.cancelSpokenResponses(this);
+        // Binder death stops orphaned TTS when the engine could not confirm stop.
+        // Never resume a microphone over uncertain playback or retain the hold forever.
         network.shutdownNow();
         super.onDestroy();
+        if (!speechStopped) android.os.Process.killProcess(android.os.Process.myPid());
     }
 }

@@ -29,8 +29,7 @@ def tap_node(text):
 adb("shell", "am", "force-stop", "com.aero.tclstation")
 adb("shell", "am", "start", "-n", "com.aero.tclstation/.MainActivity")
 time.sleep(1.5)
-adb("shell", "input", "tap", "1199", "675")
-time.sleep(1.1)
+tap_node("›")
 # Panel tap is by visible title; its parent receives the click.
 tap_node("Studio / Audio")
 assert any(n.get("text") == "Test audio (short beep)" for n in nodes()), "Missing Test audio button"

@@ -39,7 +39,7 @@ final class LiveCameraDialog implements TextureView.SurfaceTextureListener {
     private boolean closed;
     private boolean front;
 
-    private LiveCameraDialog(Activity activity) {
+    private LiveCameraDialog(Activity activity, Runnable onSpeak) {
         this.activity = activity;
         LinearLayout body = new LinearLayout(activity);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -65,6 +65,11 @@ final class LiveCameraDialog implements TextureView.SurfaceTextureListener {
             // close() returns before the hardware is free; wait for this device's onClosed.
             if (previous == null && texture.isAvailable()) open(texture.getSurfaceTexture());
         });
+        Button speak = new Button(activity);
+        speak.setText("Speak");
+        speak.setAllCaps(false);
+        speak.setOnClickListener(v -> onSpeak.run());
+        toolbar.addView(speak, new LinearLayout.LayoutParams(dp(100), dp(48)));
         toolbar.addView(switcher, new LinearLayout.LayoutParams(dp(150), dp(48)));
         body.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(48)));
         body.addView(texture, new LinearLayout.LayoutParams(dp(620), dp(270)));
@@ -76,8 +81,8 @@ final class LiveCameraDialog implements TextureView.SurfaceTextureListener {
         dialog.setOnDismissListener(d -> close());
     }
 
-    static AlertDialog show(Activity activity) {
-        LiveCameraDialog view = new LiveCameraDialog(activity);
+    static AlertDialog show(Activity activity, Runnable onSpeak) {
+        LiveCameraDialog view = new LiveCameraDialog(activity, onSpeak);
         view.dialog.show();
         view.texture.setSurfaceTextureListener(view);
         if (view.texture.isAvailable()) view.open(view.texture.getSurfaceTexture());
