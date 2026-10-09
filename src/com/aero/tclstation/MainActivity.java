@@ -29,6 +29,8 @@ import android.widget.TextClock;
 import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -46,14 +48,14 @@ public final class MainActivity extends Activity {
     private static final int MUTED = 0xffc5d3d9;
     private static final int[] ACCENT = {0xff8ce6d1, 0xffffbd81, 0xffafd0ff, 0xfff3b4ca, 0xffffd779, 0xfff2a5a1, 0xffb9b7ff};
     private static final String[] TITLES = {"Weather", "Camera", "Clock", "Music", "Studio / Audio", "Security", "Hermes"};
-    private static final String[] SUBTITLES = {StationConfig.NAME.toUpperCase(java.util.Locale.US), "PHOTO + VIDEO", "DENVER TIME", "LISTEN", "SOUND DESK", "WATCH DESK", "ASSISTANT"};
+    private static final String[] SUBTITLES = {StationConfig.NAME.toUpperCase(java.util.Locale.US), "LIVE + PHOTO", "DENVER TIME", "LISTEN", "SOUND DESK", "WATCH DESK", "ASSISTANT"};
     private final ExecutorService network = Executors.newSingleThreadExecutor();
     private final PanelState panels = new PanelState(7, 350);
     private HorizontalScrollView horizontal;
     private TextView pageLabel;
     private TextView weatherSummary;
     private Button refresh;
-    private TextView recorderStatus;
+    private android.app.AlertDialog liveCameraDialog;
     private String weatherText = "Weather: loading…";
     private boolean weatherLoading;
     private int pageWidth;
@@ -62,6 +64,13 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        try {
+            LegacyClipCleanup.remove(new File(getFilesDir(), "security-recordings"));
+            deleteSharedPreferences("recorder_status");
+        } catch (IOException e) {
+            android.util.Log.e("TCLStation", "Could not remove legacy camera clips", e);
+            android.widget.Toast.makeText(this, "Old camera clips could not be removed. Clear this app's storage in Android Settings.", android.widget.Toast.LENGTH_LONG).show();
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (savedInstanceState != null) {
             panels.restore(savedInstanceState.getInt("expanded", -1));
@@ -116,7 +125,7 @@ public final class MainActivity extends Activity {
         horizontal.addView(strip);
         weatherSummary = null;
         refresh = null;
-        recorderStatus = null;
+
         for (int p = 0; p < 3; p++) {
             ScrollView scroller = new ScrollView(this);
             scroller.setFillViewport(true);
@@ -198,10 +207,10 @@ public final class MainActivity extends Activity {
         } else {
             String summary;
             switch (index) {
-                case 1: summary = "Capture a moment or shoot a clip."; break;
+                case 1: summary = "Live on-tablet camera • no recording."; break;
                 case 3: summary = "Music is one tap away."; break;
                 case 4: summary = "EQ + routing: NOT IMPLEMENTED"; break;
-                case 5: summary = "Visible, local video recording • no audio"; break;
+                case 5: summary = "Live viewing only • nothing saved."; break;
                 default: summary = "Integration: NOT IMPLEMENTED";
             }
             text(card, summary, 17, MUTED, false);
@@ -225,8 +234,9 @@ public final class MainActivity extends Activity {
                 refresh.setEnabled(!weatherLoading);
                 break;
             case 1:
+                text(card, "Preview closes when you leave the app. No video is saved or transmitted.", 14, MUTED, false);
+                action(card, "Open live camera", this::openLiveCamera);
                 action(card, "Take photo", () -> open(new Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)));
-                action(card, "Record video manually", () -> open(new Intent(MediaStore.INTENT_ACTION_VIDEO_CAMERA)));
                 break;
             case 2:
                 action(card, "Open timer", () -> open(new Intent(AlarmClock.ACTION_SHOW_TIMERS)));
@@ -241,18 +251,8 @@ public final class MainActivity extends Activity {
                 action(card, "Test audio (short beep)", this::testAudio);
                 break;
             case 5:
-                text(card, "Local video only • visible notification • 512 MiB cap. No mic or cloud.", 14, MUTED, false);
-                recorderStatus = text(card, "Last reported status: unknown", 14, ACCENT[5], false);
-                refreshRecordingStatus();
-                LinearLayout controls = new LinearLayout(this);
-                controls.setOrientation(LinearLayout.HORIZONTAL);
-                card.addView(controls, new LinearLayout.LayoutParams(-1, -2));
-                Button start = action(controls, "Start local recording", this::startLocalRecording);
-                Button stop = action(controls, "Stop recording", this::stopLocalRecording);
-                start.setTextSize(12);
-                stop.setTextSize(12);
-                start.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1));
-                stop.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1));
+                text(card, "Open the live preview while present. No background camera, video clips, cloud stream, or alerts.", 14, MUTED, false);
+                action(card, "Open live camera", this::openLiveCamera);
                 break;
             default:
                 text(card, "No Hermes connection, controls or messages are available yet.", 15, MUTED, false);
@@ -313,38 +313,24 @@ public final class MainActivity extends Activity {
     }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
 
-    private void refreshRecordingStatus() {
-        if (recorderStatus == null) return;
-        android.content.SharedPreferences prefs = getSharedPreferences(RecorderService.PREFS, MODE_PRIVATE);
-        recorderStatus.setText("Last reported status: " + prefs.getString(RecorderService.KEY_STATE, "not started")
-            + " — " + prefs.getString(RecorderService.KEY_DETAIL, ""));
-    }
-
-    private void startLocalRecording() {
+    private void openLiveCamera() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, 42);
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, 43);
             return;
         }
-        try {
-            startForegroundService(new Intent(this, RecorderService.class).setAction(RecorderService.ACTION_START));
-            new Handler(Looper.getMainLooper()).postDelayed(this::refreshRecordingStatus, 1300);
-        } catch (RuntimeException e) {
-            android.widget.Toast.makeText(this, "Could not start recording: " + e.getMessage(), android.widget.Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void stopLocalRecording() {
-        try {
-            startService(new Intent(this, RecorderService.class).setAction(RecorderService.ACTION_STOP));
-            new Handler(Looper.getMainLooper()).postDelayed(this::refreshRecordingStatus, 1300);
-        } catch (RuntimeException e) {
-            android.widget.Toast.makeText(this, "Could not stop recording", android.widget.Toast.LENGTH_LONG).show();
-        }
+        if (liveCameraDialog != null && liveCameraDialog.isShowing()) return;
+        liveCameraDialog = LiveCameraDialog.show(this);
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == 42 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startLocalRecording();
+        if (requestCode == 43 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) openLiveCamera();
+    }
+
+    @Override protected void onPause() {
+        if (liveCameraDialog != null) liveCameraDialog.dismiss();
+        liveCameraDialog = null;
+        super.onPause();
     }
 
     private void testAudio() {

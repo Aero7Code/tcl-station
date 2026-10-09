@@ -7,12 +7,16 @@ ANDROID_JAR="$SDK/platforms/android-36/android.jar"
 for f in "$TOOLS/aapt2" "$TOOLS/d8" "$TOOLS/zipalign" "$TOOLS/apksigner" "$ANDROID_JAR"; do test -e "$f" || { printf 'Missing tool: %s\n' "$f" >&2; exit 1; }; done
 export JAVA_HOME="$(mise where java@21.0.2)"
 export PATH="$JAVA_HOME/bin:$PATH"
+# Drop stale classes: removed recorder code must never remain in the next APK.
+rm -rf build/test-classes build/classes build/dex
 mkdir -p build/test-classes build/classes build/dex
 python3 scripts/generate_config.py
-javac -d build/test-classes src/com/aero/tclstation/WeatherModel.java src/com/aero/tclstation/PanelState.java src/com/aero/tclstation/RecordingPolicy.java tests/WeatherModelTest.java tests/PanelStateTest.java tests/RecordingPolicyTest.java
+javac -d build/test-classes src/com/aero/tclstation/WeatherModel.java src/com/aero/tclstation/PanelState.java src/com/aero/tclstation/LegacyClipCleanup.java src/com/aero/tclstation/CameraOpenGate.java src/com/aero/tclstation/CameraCloseHandoff.java tests/WeatherModelTest.java tests/PanelStateTest.java tests/LegacyClipCleanupTest.java tests/CameraOpenGateTest.java tests/CameraCloseHandoffTest.java
 java -cp build/test-classes com.aero.tclstation.WeatherModelTest
 java -cp build/test-classes com.aero.tclstation.PanelStateTest
-java -cp build/test-classes com.aero.tclstation.RecordingPolicyTest
+java -cp build/test-classes com.aero.tclstation.LegacyClipCleanupTest
+java -cp build/test-classes com.aero.tclstation.CameraOpenGateTest
+java -cp build/test-classes com.aero.tclstation.CameraCloseHandoffTest
 javac -source 8 -target 8 -Xlint:-options -cp "$ANDROID_JAR" -d build/classes src/com/aero/tclstation/*.java build/generated/StationConfig.java
 "$TOOLS/d8" --min-api 31 --lib "$ANDROID_JAR" --output build/dex build/classes/com/aero/tclstation/*.class
 "$TOOLS/aapt2" compile --dir res -o build/res.zip
@@ -25,4 +29,5 @@ fi
 "$TOOLS/apksigner" sign --ks build/debug.keystore --ks-key-alias tclstation --ks-pass pass:android --key-pass pass:android --out build/tcl-station-debug.apk build/aligned.apk
 "$TOOLS/apksigner" verify --verbose build/tcl-station-debug.apk
 "$TOOLS/aapt" dump badging build/tcl-station-debug.apk | /usr/bin/grep -E '^(package:|sdkVersion:|targetSdkVersion:|launchable-activity:)'
+python3 tests/no_recording_artifacts.py
 printf 'APK: %s/build/tcl-station-debug.apk\n' "$PWD"
