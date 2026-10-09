@@ -1,0 +1,6 @@
+# Optional example; copy to station.local.properties and edit locally.
+# station.local.properties is ignored by Git and never belongs in an issue.
+name=Denver
+latitude=39.7392
+longitude=-104.9903
+timezone=America/Denver

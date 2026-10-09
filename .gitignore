@@ -1,0 +1,16 @@
+# Builds, signing material, local state and credentials
+/build/
+/station.local.properties
+*.keystore
+*.jks
+*.apk
+*.idsig
+.env
+.env.*
+*.pem
+*.key
+__pycache__/
+*.pyc
+.idea/
+*.iml
+.DS_Store
