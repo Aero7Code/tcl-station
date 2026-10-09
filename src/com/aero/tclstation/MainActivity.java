@@ -295,6 +295,7 @@ public final class MainActivity extends Activity {
             case 4:
                 text(card, "Audio output is managed by Android. No connected-device monitor, mixer or EQ yet.", 15, MUTED, false);
                 action(card, "Test audio (short beep)", this::testAudio);
+                action(card, "Test spoken reply", () -> say("Station voice test. If you hear me from the Echo Studio, tablet text-to-speech is working."));
                 break;
             case 5:
                 text(card, "Open the live preview while present. No background camera, video clips, cloud stream, or alerts.", 14, MUTED, false);
@@ -446,7 +447,9 @@ public final class MainActivity extends Activity {
                 else pendingVoice = command;
             }
         }
-        if (resumed) ListeningService.resumeAfterPushToTalk();
+        // The recognizer can return to the previous launcher instead of resuming Station.
+        // Its result is terminal; release the push-to-talk hold even if this Activity stays paused.
+        ListeningService.resumeAfterPushToTalk();
     }
 
     @Override protected void onResume() {
@@ -465,6 +468,9 @@ public final class MainActivity extends Activity {
 
     void handleVoice(VoiceCommand command) {
         switch (command.action) {
+            case WAKE:
+                say("I'm listening.");
+                break;
             case WEATHER:
                 say(weatherText.replace("•", ", ").replace("\n", ". "));
                 break;
@@ -504,7 +510,7 @@ public final class MainActivity extends Activity {
                 say("Station home");
                 break;
             case HELP:
-                say("For hands-free, say Station first. Try: Station show weather, Station set timer for five minutes, or Station stop listening. The Speak button still works without Station.");
+                say("For hands-free, say Hey Station, then a command. Try: Hey Station show weather, or Hey Station stop listening. The Speak button still works without a wake phrase.");
                 break;
             case STOP_LISTENING:
                 stopService(new Intent(this, ListeningService.class));

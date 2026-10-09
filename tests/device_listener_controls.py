@@ -53,6 +53,7 @@ assert 'ListeningService' in run('shell','dumpsys','activity','services','com.ae
 assert station_mic_active(), 'Listener lost microphone capture with screen off'
 run('shell','input','keyevent','26')
 time.sleep(1)
+run('shell','wm','dismiss-keyguard')
 run('shell','cmd','statusbar','collapse')
 run('shell','input','swipe','600','650','600','100','400')  # Dismiss noncredential lock shade.
 run('shell','am','start','-n','com.aero.tclstation/.MainActivity')

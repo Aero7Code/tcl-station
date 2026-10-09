@@ -33,4 +33,5 @@ tap_node("›")
 # Panel tap is by visible title; its parent receives the click.
 tap_node("Studio / Audio")
 assert any(n.get("text") == "Test audio (short beep)" for n in nodes()), "Missing Test audio button"
-print("PASS Studio audio test button is visible after expansion")
+assert any(n.get("text") == "Test spoken reply" for n in nodes()), "Missing TTS test button"
+print("PASS Studio audio and spoken-reply controls are visible after expansion")

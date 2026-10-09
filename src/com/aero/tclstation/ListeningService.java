@@ -144,7 +144,7 @@ public final class ListeningService extends Service implements RecognitionListen
             microphone = new SpeechService(recognizer, 16000.0f);
             capturing = microphone.startListening(this);
             if (!capturing) { fail("Microphone could not start"); return; }
-            notifyStatus("Listening locally • say Station, then a command");
+            notifyStatus("Listening locally • say Hey Station, then a command");
         } catch (IOException | RuntimeException e) { fail("Microphone unavailable"); }
     }
 
@@ -211,7 +211,9 @@ public final class ListeningService extends Service implements RecognitionListen
             activity.handleVoice(command);
             if (speechHold.mayResume()) scheduleResume(1100);
         } else {
-            if (command.action == VoiceCommand.Action.TIME) {
+            if (command.action == VoiceCommand.Action.WAKE) {
+                speak("I'm listening.");
+            } else if (command.action == VoiceCommand.Action.TIME) {
                 SimpleDateFormat format = new SimpleDateFormat("h:mm a", Locale.US);
                 format.setTimeZone(TimeZone.getTimeZone("America/Denver"));
                 speak("It is " + format.format(new Date()) + " Denver time.");

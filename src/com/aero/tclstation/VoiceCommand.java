@@ -6,7 +6,7 @@ import java.util.regex.Pattern;
 
 /** Explicit, bounded local command grammar; never executes arbitrary recognized text. */
 final class VoiceCommand {
-    enum Action { WEATHER, TIME, CAMERA, CLOSE_CAMERA, SET_TIMER, TIMERS, ALARMS, MUSIC, HOME, HELP, STOP_LISTENING, UNKNOWN }
+    enum Action { WAKE, WEATHER, TIME, CAMERA, CLOSE_CAMERA, SET_TIMER, TIMERS, ALARMS, MUSIC, HOME, HELP, STOP_LISTENING, UNKNOWN }
     private static final Pattern TIMER = Pattern.compile("^(?:set|start) (?:a )?timer for ([a-z0-9]+) (seconds?|minutes?)$");
     final Action action;
     final int seconds;
@@ -40,6 +40,7 @@ final class VoiceCommand {
     }
 
     private static VoiceCommand of(Action action) { return new VoiceCommand(action, 0); }
+    static VoiceCommand wake() { return of(Action.WAKE); }
 
     private static long parseCount(String count) {
         String[] words = {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "fifteen", "twenty", "thirty", "sixty", "ninety"};

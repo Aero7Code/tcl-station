@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.4] — 2026-10-09
+
+- Accept “Hey Station” as well as “Station” at the beginning of final offline recognized commands. Standalone “Hey Station” triggers “I'm listening” and admits one bounded command in the next 15 seconds. This remains full-phrase recognition, **not** a dedicated hotword detector. Keep Speak push-to-talk independent.
+- Add **Test spoken reply** beside the audio beep. Android TTS synthesized the test and started a media audio player routed to the tablet's wired output; microphone capture paused during speech and resumed afterward. Hearing it from the Echo Studio still needs an in-room check.
+- Fix the listener staying paused if a canceled external Speak recognizer returns to another launcher instead of resuming Station. The device handoff and screen-off/stop/restart tests passed after the fix.
+- A synthetic wake phrase played through the tablet's wired audio output did **not** stop the listener. Acoustic feedback, speaker volume, and recognized words were not established; **human-spoken wake and audible external-speaker replies are not yet verified**.
+
 ## [0.1.0-alpha.3] — 2026-10-09
 
 ### Added
