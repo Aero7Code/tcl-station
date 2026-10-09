@@ -69,6 +69,7 @@ python3 scripts/generate_config.py
 python3 tests/home_manifest_test.py
 python3 tests/listener_manifest_test.py
 python3 tests/listener_tts_safety_test.py
+python3 tests/voice_choice_source_test.py
 javac -d build/test-classes src/com/aero/tclstation/WeatherModel.java src/com/aero/tclstation/PanelState.java src/com/aero/tclstation/LegacyClipCleanup.java src/com/aero/tclstation/CameraOpenGate.java src/com/aero/tclstation/CameraCloseHandoff.java src/com/aero/tclstation/VoiceCommand.java src/com/aero/tclstation/HandsFreeGate.java tests/WeatherModelTest.java tests/PanelStateTest.java tests/LegacyClipCleanupTest.java tests/CameraOpenGateTest.java tests/CameraCloseHandoffTest.java tests/VoiceCommandTest.java tests/HandsFreeGateTest.java
 javac -d build/test-classes tests/TtsMicHoldTest.java
 java -cp build/test-classes com.aero.tclstation.WeatherModelTest

@@ -230,6 +230,7 @@ public final class ListeningService extends Service implements RecognitionListen
     private void speak(String message) {
         String id = deferResponse(this, "station-hands-free");
         if (voiceReady && voice != null) {
+            StationVoiceProfile.apply(this, voice);
             if (voice.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) finishResponse(this, id);
             return;
         }
@@ -247,6 +248,7 @@ public final class ListeningService extends Service implements RecognitionListen
                 @Override public void onStop(String id, boolean interrupted) { main.post(() -> finishResponse(ListeningService.this, id)); }
             });
             if (pendingSpeech != null) {
+                StationVoiceProfile.apply(this, voice);
                 if (voice.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
                     finishResponse(this, pendingSpeechId);
                 pendingSpeech = null;

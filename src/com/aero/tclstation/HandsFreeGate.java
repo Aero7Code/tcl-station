@@ -4,7 +4,7 @@ import java.util.Locale;
 
 /** A bounded follow-up after 'Hey Station', or an explicit prefixed command. */
 final class HandsFreeGate {
-    private static final long FOLLOW_UP_MS = 15000;
+    private static final long FOLLOW_UP_MS = 35000;
     private String lastPhrase = "";
     private long lastAt = -1;
     private long wokeAt = -1;

@@ -27,11 +27,15 @@ public final class HandsFreeGateTest {
         expect(hey, "what time is it", 8000, VoiceCommand.Action.TIME, 0);
         expect(hey, "show weather", 9000, VoiceCommand.Action.UNKNOWN, 0); // One follow-up per wake.
         expect(hey, "hey station", 10000, VoiceCommand.Action.WAKE, 0);
-        expect(hey, "show weather", 25001, VoiceCommand.Action.UNKNOWN, 0); // Wake expired.
-        expect(hey, "hey station", 26000, VoiceCommand.Action.WAKE, 0);
-        expect(hey, "stop listening", 26001, VoiceCommand.Action.STOP_LISTENING, 0);
-        expect(hey, "hey stationary show weather", 27000, VoiceCommand.Action.UNKNOWN, 0);
-        expect(hey, "my hey station show weather", 28000, VoiceCommand.Action.UNKNOWN, 0);
+        expect(hey, "show weather", 44999, VoiceCommand.Action.WEATHER, 0); // Within 35 seconds.
+        expect(hey, "hey station", 50000, VoiceCommand.Action.WAKE, 0);
+        expect(hey, "show weather", 85000, VoiceCommand.Action.WEATHER, 0); // At the boundary.
+        expect(hey, "hey station", 90000, VoiceCommand.Action.WAKE, 0);
+        expect(hey, "show weather", 125001, VoiceCommand.Action.UNKNOWN, 0); // Wake expired.
+        expect(hey, "hey station", 126000, VoiceCommand.Action.WAKE, 0);
+        expect(hey, "stop listening", 126001, VoiceCommand.Action.STOP_LISTENING, 0);
+        expect(hey, "hey stationary show weather", 127000, VoiceCommand.Action.UNKNOWN, 0);
+        expect(hey, "my hey station show weather", 128000, VoiceCommand.Action.UNKNOWN, 0);
         System.out.println("PASS local wake-prefix, explicit stop, and duplicate suppression");
     }
 }

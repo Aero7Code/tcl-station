@@ -293,9 +293,25 @@ public final class MainActivity extends Activity {
                 action(card, "Open YouTube Music", () -> open(new Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/"))));
                 break;
             case 4:
-                text(card, "Audio output is managed by Android. No connected-device monitor, mixer or EQ yet.", 15, MUTED, false);
-                action(card, "Test audio (short beep)", this::testAudio);
-                action(card, "Test spoken reply", () -> say("Station voice test. If you hear me from the Echo Studio, tablet text-to-speech is working."));
+                text(card, "Android handles audio. No EQ or mixer.", 14, MUTED, false);
+                LinearLayout audioActions = new LinearLayout(this);
+                audioActions.setOrientation(LinearLayout.HORIZONTAL);
+                card.addView(audioActions, new LinearLayout.LayoutParams(-1, -2));
+                Button beep = action(audioActions, "Test audio (short beep)", this::testAudio);
+                beep.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1));
+                Button spoken = action(audioActions, "Test spoken reply", () -> say("Station voice test. If you hear me from the Echo Studio, tablet text-to-speech is working."));
+                spoken.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1));
+                Button voiceChoice = action(card, StationVoiceProfile.softer(this) ? "Voice: alternate (tap for original)" : "Voice: original (tap for alternate)", () -> {
+                    boolean softer = StationVoiceProfile.toggle(this);
+                    int x = horizontal.getScrollX();
+                    say(softer ? "Trying the alternate voice." : "Original voice selected.");
+                    buildDashboard();
+                    horizontal.post(() -> horizontal.scrollTo(x, 0));
+                });
+                voiceChoice.getLayoutParams().height = dp(42);
+                voiceChoice.setContentDescription(StationVoiceProfile.softer(this)
+                    ? "Alternate voice requested. Tap to try original voice"
+                    : "Original voice selected. Tap to try alternate voice");
                 break;
             case 5:
                 text(card, "Open the live preview while present. No background camera, video clips, cloud stream, or alerts.", 14, MUTED, false);
@@ -529,6 +545,7 @@ public final class MainActivity extends Activity {
         showVoiceStatus(message);
         String id = ListeningService.beginSpokenResponse(this);
         if (speechReady && speech != null) {
+            applyVoiceChoice();
             if (speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR)
                 ListeningService.spokenResponseFinished(this, id);
             return;
@@ -550,12 +567,18 @@ public final class MainActivity extends Activity {
                 @Override public void onStop(String id, boolean interrupted) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
             });
             if (speechReady && pendingSpeech != null) {
+                applyVoiceChoice();
                 if (speech.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
                     ListeningService.spokenResponseFinished(this, pendingSpeechId);
                 pendingSpeech = null;
                 pendingSpeechId = null;
             }
         });
+    }
+
+    private void applyVoiceChoice() {
+        if (!StationVoiceProfile.apply(this, speech) && StationVoiceProfile.softer(this))
+            showVoiceStatus("Alternate voice unavailable; using system voice");
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
