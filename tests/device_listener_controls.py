@@ -26,8 +26,22 @@ def station_mic_active():
     return bool(re.search(r'active\? true\s*\n[^\n]*pack:com\.aero\.tclstation', current))
 
 run('shell','am','start','-S','-n','com.aero.tclstation/.MainActivity')
-assert any(n.get('text') == 'Hands-free: Off' for n in nodes()), 'Hands-free toggle is not visible'
-print('PASS hands-free control is visible and initially off')
+for _ in range(30):
+    initial = {n.get('text') for n in nodes()}
+    if 'Hands-free: On' in initial or 'Hands-free: Off' in initial:
+        break
+    time.sleep(.5)
+else:
+    raise AssertionError('Listener never settled after Station launch')
+if 'Hands-free: On' in initial:
+    tap('Hands-free: On')  # Previous opted-in setting survives an app restart.
+for _ in range(10):
+    if any(n.get('text') == 'Hands-free: Off' for n in nodes()):
+        break
+    time.sleep(.3)
+else:
+    raise AssertionError('Hands-free toggle is not visible or could not stop')
+print('PASS hands-free control is visible and explicitly stoppable')
 run('shell','pm','grant','com.aero.tclstation','android.permission.RECORD_AUDIO')
 tap('Hands-free: Off')
 deadline = time.monotonic() + 90

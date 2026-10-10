@@ -14,6 +14,7 @@ import android.media.AudioManager;
 import android.media.ToneGenerator;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -58,7 +59,9 @@ public final class MainActivity extends Activity {
     // Default is a city-center example. A private build-time override is never committed.
     private static final String WEATHER_URL = "https://api.open-meteo.com/v1/forecast?latitude="
         + StationConfig.LATITUDE + "&longitude=" + StationConfig.LONGITUDE
-        + "&current=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=America%2FDenver";
+        + "&current=temperature_2m,weather_code,relative_humidity_2m,apparent_temperature,wind_speed_10m,is_day"
+        + "&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max"
+        + "&forecast_days=7&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FDenver";
     private static final int BACKGROUND = 0xff101b25;
     private static final int MUTED = 0xffc5d3d9;
     private static final int[] ACCENT = {0xff8ce6d1, 0xffffbd81, 0xffafd0ff, 0xfff3b4ca, 0xffffd779, 0xfff2a5a1, 0xffb9b7ff};
@@ -76,6 +79,7 @@ public final class MainActivity extends Activity {
     private static final int HOME_REQUEST = 92;
     private static final int MICROPHONE_REQUEST = 44;
     private static final int SPEAK_PERMISSION_REQUEST = 45;
+    private static final int NOTIFICATION_REQUEST = 46;
     private static final int SPEAK_TIMEOUT_MS = 9000;
     private static WeakReference<MainActivity> foreground = new WeakReference<>(null);
     private boolean resumed;
@@ -91,6 +95,7 @@ public final class MainActivity extends Activity {
     private String pendingSpeech;
     private String pendingSpeechId;
     private Button handsFree;
+    static final String ACTION_OPEN_WEATHER = "com.aero.tclstation.OPEN_WEATHER";
 
     static MainActivity foregroundActivity() {
         MainActivity activity = foreground.get();
@@ -98,6 +103,19 @@ public final class MainActivity extends Activity {
     }
     private String weatherText = "Weather: loading…";
     private boolean weatherLoading;
+    private WeatherForecast weatherForecast = WeatherForecast.parse(null);
+    private android.app.Dialog weatherDialog;
+    private long weatherLoadedAt;
+    private final Handler weatherUi = new Handler(Looper.getMainLooper());
+    private final Runnable weatherExpiry = () -> {
+        if (!resumed) return;
+        if (currentWeatherFresh()) { scheduleWeatherExpiry(); return; }
+        if (weatherSummary != null) weatherSummary.setText(weatherDisplayText());
+        boolean detailOpen = weatherDialog != null && weatherDialog.isShowing();
+        if (detailOpen) { weatherDialog.dismiss(); weatherDialog = null; }
+        if (!weatherLoading) loadWeather();
+        if (detailOpen) showWeatherDetail(); // Neutral loading scene, never yesterday's forecast.
+    };
     private int pageWidth;
     private int page;
     private boolean landscape;
@@ -112,22 +130,29 @@ public final class MainActivity extends Activity {
             android.widget.Toast.makeText(this, "Old camera clips could not be removed. Clear this app's storage in Android Settings.", android.widget.Toast.LENGTH_LONG).show();
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getSharedPreferences("station", MODE_PRIVATE).edit().remove("last_weather").apply();
         if (savedInstanceState != null) {
             panels.restore(savedInstanceState.getInt("expanded", -1));
             page = Math.max(0, Math.min(2, savedInstanceState.getInt("page", 0)));
-            weatherText = savedInstanceState.getString("weather", weatherText);
         }
         landscape = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
         pageWidth = getResources().getDisplayMetrics().widthPixels;
         buildDashboard();
         horizontal.post(() -> horizontal.scrollTo(page * pageWidth, 0));
         loadWeather();
+        if (ACTION_OPEN_WEATHER.equals(getIntent().getAction()))
+            horizontal.post(this::openWeatherPanel);
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (ACTION_OPEN_WEATHER.equals(intent.getAction())) openWeatherPanel();
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
         out.putInt("expanded", panels.expanded());
         out.putInt("page", horizontal == null ? page : Math.max(0, Math.min(2, Math.round((float) horizontal.getScrollX() / pageWidth))));
-        out.putString("weather", weatherText);
         super.onSaveInstanceState(out);
     }
 
@@ -234,12 +259,25 @@ public final class MainActivity extends Activity {
         card.setElevation(dp(2));
         card.setClickable(true);
         card.setFocusable(true);
-        card.setContentDescription(TITLES[index] + (expanded ? ", expanded. Double tap to shrink" : ", compact. Tap to expand"));
+        card.setContentDescription(TITLES[index] + (expanded
+            ? index == 0 ? ", expanded. Tap again for detailed weather; hold to shrink" : ", expanded. Double tap to shrink"
+            : ", compact. Tap to expand"));
         card.setOnClickListener(v -> {
+            if (index == 0 && panels.expanded() == 0) {
+                showWeatherDetail();
+                return;
+            }
             panels.tap(index, SystemClock.uptimeMillis());
             int x = horizontal.getScrollX();
             buildDashboard();
             horizontal.post(() -> horizontal.scrollTo(x, 0));
+        });
+        if (index == 0) card.setOnLongClickListener(v -> {
+            panels.restore(-1);
+            int x = horizontal.getScrollX();
+            buildDashboard();
+            horizontal.post(() -> horizontal.scrollTo(x, 0));
+            return true;
         });
         LinearLayout.LayoutParams position = landscape
             ? new LinearLayout.LayoutParams(0, dp(index == 6 ? (expanded ? 194 : 136) : 348), expanded ? 1.8f : 1f)
@@ -251,7 +289,7 @@ public final class MainActivity extends Activity {
         TextView title = text(card, TITLES[index], expanded ? 27 : 25, Color.WHITE, true);
         title.setPadding(0, dp(index == 6 ? 4 : 10), 0, dp(4));
         if (index == 0) {
-            weatherSummary = text(card, weatherText, expanded ? 20 : 17, Color.WHITE, false);
+            weatherSummary = text(card, weatherDisplayText(), expanded ? 20 : 17, Color.WHITE, false);
             weatherSummary.setMaxLines(expanded ? 3 : 4);
         } else if (index == 2) {
             TextClock clock = new TextClock(this);
@@ -273,7 +311,9 @@ public final class MainActivity extends Activity {
             }
             text(card, summary, index == 6 ? 15 : 17, MUTED, false);
         }
-        TextView hint = text(card, expanded ? "DOUBLE TAP CARD TO SHRINK" : "TAP TO EXPAND  ↗", 12, ACCENT[index], true);
+        TextView hint = text(card, expanded
+            ? index == 0 ? "TAP AGAIN FOR DETAILS • HOLD TO SHRINK" : "DOUBLE TAP CARD TO SHRINK"
+            : "TAP TO EXPAND  ↗", 12, ACCENT[index], true);
         hint.setPadding(0, dp(index == 6 ? 4 : 15), 0, dp(3));
         if (expanded) addDetails(card, index);
         if (!landscape) card.setMinimumHeight(dp(expanded ? 300 : 166));
@@ -288,7 +328,13 @@ public final class MainActivity extends Activity {
         switch (index) {
             case 0:
                 text(card, "Configured area point • Open-Meteo. Not device GPS.", 14, MUTED, false);
-                refresh = action(card, "Refresh weather", this::loadWeather);
+                LinearLayout weatherActions = new LinearLayout(this);
+                weatherActions.setOrientation(LinearLayout.HORIZONTAL);
+                card.addView(weatherActions, new LinearLayout.LayoutParams(-1, -2));
+                Button detail = action(weatherActions, "Detailed weather", this::showWeatherDetail);
+                detail.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1));
+                refresh = action(weatherActions, "Refresh weather", this::loadWeather);
+                refresh.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1));
                 refresh.setEnabled(!weatherLoading);
                 break;
             case 1:
@@ -515,6 +561,7 @@ public final class MainActivity extends Activity {
 
     private void toggleListening() {
         if (ListeningService.isEnabled()) {
+            HandsFreePreference.setEnabled(this, false);
             stopService(new Intent(this, ListeningService.class));
             refreshListeningButton();
         } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -523,6 +570,15 @@ public final class MainActivity extends Activity {
     }
 
     private void startListening() {
+        if (Build.VERSION.SDK_INT >= 33
+            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST);
+            return;
+        }
+        if (!ListeningService.notificationsAvailable(this)) {
+            showVoiceStatus("Enable Station notifications to keep the microphone Stop control visible");
+            return;
+        }
         try {
             startForegroundService(new Intent(this, ListeningService.class).setAction(ListeningService.ACTION_START));
             handsFree.setText("Hands-free: Loading");
@@ -569,8 +625,57 @@ public final class MainActivity extends Activity {
         super.onResume();
         resumed = true;
         foreground = new WeakReference<>(this);
+        if (HandsFreePreference.isEnabled(this) && !ListeningService.notificationsAvailable(this)) {
+            HandsFreePreference.setEnabled(this, false);
+            stopService(new Intent(this, ListeningService.class));
+            showVoiceStatus("Notifications off; hands-free stopped so Stop remains visible");
+        } else if (HandsFreePreference.isEnabled(this) && !ListeningService.isEnabled()
+            && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+            startListening(); // Recover only after Station becomes visible; Android may block background microphone starts.
+        if (weatherLoadedAt > 0 && !weatherLoading && !currentWeatherFresh()) loadWeather();
+        else scheduleWeatherExpiry();
+        if (weatherSummary != null) weatherSummary.setText(weatherDisplayText());
         refreshListeningButton();
         if (!pushToTalkActive) ListeningService.resumeAfterPushToTalk();
+    }
+
+    private void openWeatherPanel() {
+        if (weatherDialog != null && weatherDialog.isShowing()) weatherDialog.dismiss();
+        if (!weatherLoading && !currentWeatherFresh()) loadWeather();
+        panels.restore(0);
+        page = 0;
+        buildDashboard();
+        horizontal.post(() -> { horizontal.scrollTo(0, 0); updatePageLabel(); });
+    }
+
+    private void showWeatherDetail() {
+        if (weatherDialog != null && weatherDialog.isShowing()) return;
+        boolean fresh = !weatherLoading && currentWeatherFresh();
+        if (!fresh && !weatherLoading) loadWeather();
+        weatherDialog = WeatherDetailDialog.show(this, fresh ? weatherForecast : WeatherForecast.parse(null), this::loadWeather);
+    }
+
+    private boolean currentWeatherFresh() {
+        return WeatherFreshness.canDisplay(weatherForecast, weatherLoadedAt, SystemClock.elapsedRealtime(),
+            java.time.LocalDateTime.now(java.time.ZoneId.of("America/Denver")));
+    }
+
+    private String weatherDisplayText() {
+        return WeatherFreshness.visibleSummary(weatherForecast, weatherLoadedAt, SystemClock.elapsedRealtime(),
+            java.time.LocalDateTime.now(java.time.ZoneId.of("America/Denver")), weatherLoading, weatherText);
+    }
+
+    private void scheduleWeatherExpiry() {
+        weatherUi.removeCallbacks(weatherExpiry);
+        if (!resumed || !currentWeatherFresh()) return;
+        java.time.LocalDateTime local = java.time.LocalDateTime.now(java.time.ZoneId.of("America/Denver"));
+        long untilCache = 15 * 60_000L - (SystemClock.elapsedRealtime() - weatherLoadedAt);
+        long untilObservation = java.time.Duration.between(local,
+            weatherForecast.current.observedAt.plusHours(1)).toMillis();
+        long untilMidnight = java.time.Duration.between(local,
+            local.toLocalDate().plusDays(1).atStartOfDay()).toMillis();
+        long delay = Math.max(1_000, Math.min(untilCache, Math.min(untilObservation, untilMidnight)) + 1_000);
+        weatherUi.postDelayed(weatherExpiry, delay);
     }
 
     void handleVoice(VoiceCommand command) {
@@ -579,7 +684,8 @@ public final class MainActivity extends Activity {
                 say("I'm listening.");
                 break;
             case WEATHER:
-                say(weatherText.replace("•", ", ").replace("\n", ". "));
+                openWeatherPanel();
+                say(weatherDisplayText().replace("•", ", ").replace("\n", ". "));
                 break;
             case TIME:
                 SimpleDateFormat format = new SimpleDateFormat("h:mm a", Locale.US);
@@ -640,6 +746,7 @@ public final class MainActivity extends Activity {
                 say("For hands-free, say Hey Station, then a command. Try: Hey Station show weather, or Hey Station stop listening. The Speak button still works without a wake phrase.");
                 break;
             case STOP_LISTENING:
+                HandsFreePreference.setEnabled(this, false);
                 stopService(new Intent(this, ListeningService.class));
                 say("Hands-free listening stopped");
                 break;
@@ -770,10 +877,17 @@ public final class MainActivity extends Activity {
             else showVoiceStatus("Microphone permission denied; hands-free remains off");
             return;
         }
+        if (requestCode == NOTIFICATION_REQUEST) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startListening();
+            else showVoiceStatus("Notification permission denied; hands-free remains off. Enable Station notifications in Android settings.");
+            return;
+        }
         if (requestCode == 43 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) openLiveCamera(requestedFront);
     }
 
     @Override protected void onPause() {
+        weatherUi.removeCallbacks(weatherExpiry);
+        if (weatherDialog != null && weatherDialog.isShowing()) { weatherDialog.dismiss(); weatherDialog = null; }
         stopLocalInput();
         resumed = false;
         foreground = new WeakReference<>(null);
@@ -824,12 +938,18 @@ public final class MainActivity extends Activity {
     }
 
     private void loadWeather() {
+        if (weatherLoading) return;
         weatherText = "Weather: loading…";
         weatherLoading = true;
-        if (weatherSummary != null) weatherSummary.setText(weatherText);
+        weatherUi.removeCallbacks(weatherExpiry);
+        if (weatherDialog != null && weatherDialog.isShowing()) {
+            weatherDialog.dismiss();
+            weatherDialog = WeatherDetailDialog.show(this, WeatherForecast.parse(null), this::loadWeather);
+        }
+        if (weatherSummary != null) weatherSummary.setText(weatherDisplayText());
         if (refresh != null) refresh.setEnabled(false);
         network.execute(() -> {
-            WeatherModel result = null;
+            WeatherForecast result = null;
             try {
                 HttpURLConnection connection = (HttpURLConnection) URI.create(WEATHER_URL).toURL().openConnection();
                 connection.setConnectTimeout(7000);
@@ -840,26 +960,36 @@ public final class MainActivity extends Activity {
                             byte[] buffer = new byte[4096];
                             int count;
                             while ((count = stream.read(buffer)) != -1 && bytes.size() <= 100_000) bytes.write(buffer, 0, count);
-                            result = WeatherModel.parse(bytes.toString(StandardCharsets.UTF_8.name()));
+                            result = WeatherForecast.parse(bytes.toString(StandardCharsets.UTF_8.name()));
                         }
                     }
                 } finally { connection.disconnect(); }
             } catch (Exception ignored) { /* Show honest failure state below. */ }
-            WeatherModel value = result;
+            WeatherForecast value = result;
             runOnUiThread(() -> {
                 if (isDestroyed()) return;
-                weatherText = value != null && value.available
-                    ? StationConfig.NAME + ": " + value.temperatureF + "°F  •  " + value.description + "\nAs of " + value.observedTime + " local time"
+                weatherForecast = value != null ? value : WeatherForecast.parse(null);
+                WeatherModel current = weatherForecast.current;
+                weatherLoadedAt = current.available ? SystemClock.elapsedRealtime() : 0;
+                weatherText = current.available
+                    ? StationConfig.NAME + ": " + current.temperatureF + "°F  •  " + current.description + "\nAs of " + current.observedTime + " local time"
                     : "Weather unavailable — check connection and retry";
                 weatherLoading = false;
-                getSharedPreferences("station", MODE_PRIVATE).edit().putString("last_weather", weatherText).apply();
-                if (weatherSummary != null) weatherSummary.setText(weatherText);
+                if (weatherSummary != null) weatherSummary.setText(weatherDisplayText());
                 if (refresh != null) refresh.setEnabled(true);
+                scheduleWeatherExpiry();
+                if (weatherDialog != null && weatherDialog.isShowing()) {
+                    weatherDialog.dismiss();
+                    weatherDialog = WeatherDetailDialog.show(this,
+                        currentWeatherFresh() ? weatherForecast : WeatherForecast.parse(null), this::loadWeather);
+                }
             });
         });
     }
 
     @Override protected void onDestroy() {
+        weatherUi.removeCallbacks(weatherExpiry);
+        if (weatherDialog != null) weatherDialog.dismiss();
         stopLocalInput();
         if (tapModel != null) { tapModel.close(); tapModel = null; }
         boolean speechStopped = speech == null || speech.stop() == TextToSpeech.SUCCESS;

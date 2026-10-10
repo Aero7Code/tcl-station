@@ -7,10 +7,12 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.AudioManager;
 import android.view.KeyEvent;
 import android.os.Handler;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -29,12 +31,13 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
 
-/** Visible, explicitly started foreground microphone service; never records audio to disk. */
+/** Opted-in, visible foreground microphone service; never records audio to disk. */
 public final class ListeningService extends Service implements RecognitionListener {
     static final String ACTION_START = "com.aero.tclstation.LISTEN_START";
     static final String ACTION_STOP = "com.aero.tclstation.LISTEN_STOP";
     private static final String CHANNEL = "station-microphone";
     private static final int NOTIFICATION_ID = 501;
+    private static final int WEATHER_NOTIFICATION_ID = 502;
     private static ListeningService active;
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -53,6 +56,23 @@ public final class ListeningService extends Service implements RecognitionListen
     private static final TtsMicHold speechHold = new TtsMicHold();
     private int generation;
     private int resumeEpoch;
+    private final Runnable notificationGuard = new Runnable() {
+        @Override public void run() {
+            if (active != ListeningService.this) return;
+            if (!notificationsAvailable(ListeningService.this)) {
+                fail("Notifications disabled; hands-free stopped so Stop remains visible");
+            } else main.postDelayed(this, 10_000);
+        }
+    };
+
+    static boolean notificationsAvailable(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null || !manager.areNotificationsEnabled()) return false;
+        if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) return false;
+        NotificationChannel channel = manager.getNotificationChannel(CHANNEL);
+        return channel == null || channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
+    }
 
     static boolean isEnabled() { return active != null; }
     static boolean isCapturing() { return active != null && active.capturing; }
@@ -107,15 +127,33 @@ public final class ListeningService extends Service implements RecognitionListen
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            HandsFreePreference.setEnabled(this, false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (intent == null && !HandsFreePreference.isEnabled(this)) {
             stopSelf();
             return START_NOT_STICKY;
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            HandsFreePreference.setEnabled(this, false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (!notificationsAvailable(this)) {
+            HandsFreePreference.setEnabled(this, false);
             stopSelf();
             return START_NOT_STICKY;
         }
         try { startForeground(NOTIFICATION_ID, notification("Preparing offline speech model")); }
-        catch (RuntimeException e) { stopSelf(); return START_NOT_STICKY; }
+        catch (RuntimeException e) {
+            HandsFreePreference.setEnabled(this, false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (intent != null && ACTION_START.equals(intent.getAction())) HandsFreePreference.setEnabled(this, true);
+        main.removeCallbacks(notificationGuard);
+        main.postDelayed(notificationGuard, 10_000);
         // TTS may have begun while hands-free was off. Arm the same fail-closed
         // watchdog used for speech that begins after service startup.
         for (String id : speechHold.heldIds()) watchSpeech(id);
@@ -134,7 +172,7 @@ public final class ListeningService extends Service implements RecognitionListen
             });
         }
         refreshButton();
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     private Notification notification(String status) {
@@ -206,6 +244,7 @@ public final class ListeningService extends Service implements RecognitionListen
     private void watchSpeech(String id) {
         main.postDelayed(() -> {
             if (active == this && speechHold.isHeld(id)) {
+                HandsFreePreference.setEnabled(this, false);
                 MainActivity activity = MainActivity.foregroundActivity();
                 if (activity != null) activity.showVoiceStatus("Speech stalled; hands-free stopped");
                 stopSelf(); // Never resume capture over speech with an unknown end time.
@@ -235,6 +274,7 @@ public final class ListeningService extends Service implements RecognitionListen
             return;
         }
         if (command.action == VoiceCommand.Action.STOP_LISTENING) {
+            HandsFreePreference.setEnabled(this, false);
             stopSelf();
             return;
         }
@@ -251,8 +291,7 @@ public final class ListeningService extends Service implements RecognitionListen
                 format.setTimeZone(TimeZone.getTimeZone("America/Denver"));
                 speak("It is " + format.format(new Date()) + " Denver time.");
             } else if (command.action == VoiceCommand.Action.WEATHER) {
-                String weather = getSharedPreferences("station", MODE_PRIVATE).getString("last_weather", "Open Station to load weather.");
-                speak(weather.replace("•", ", ").replace("\n", ". "));
+                openWeatherFromBackground();
             } else if (command.action == VoiceCommand.Action.PLAY_MEDIA
                 || command.action == VoiceCommand.Action.PAUSE_MEDIA
                 || command.action == VoiceCommand.Action.NEXT_MEDIA) {
@@ -263,6 +302,25 @@ public final class ListeningService extends Service implements RecognitionListen
                 speak("Open Station to use that command.");
             }
         }
+    }
+
+    private void openWeatherFromBackground() {
+        Intent show = new Intent(this, MainActivity.class).setAction(MainActivity.ACTION_OPEN_WEATHER)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent tap = PendingIntent.getActivity(this, 2, show,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        getSystemService(NotificationManager.class).notify(WEATHER_NOTIFICATION_ID,
+            new Notification.Builder(this, CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_menu_compass)
+                .setContentTitle("Station weather command heard")
+                .setContentText("Tap to open the live weather panel")
+                .setContentIntent(tap)
+                .setAutoCancel(true).build());
+        // Android may block an Activity launch from a background foreground-service.
+        // Keep the tap-to-open notification available as a reliable fallback.
+        try { startActivity(show); }
+        catch (RuntimeException e) { notifyStatus("Tap the weather notification to open Station"); }
+        speak("Opening weather. If it does not appear, tap the weather notification.");
     }
 
     private void backgroundMedia(VoiceCommand.Action action) {
@@ -338,19 +396,25 @@ public final class ListeningService extends Service implements RecognitionListen
     @Override public void onTimeout() { if (active == this) fail("Microphone timed out"); }
 
     private void fail(String message) {
+        android.util.Log.w("TCLStation", message);
+        HandsFreePreference.setEnabled(this, false);
         MainActivity activity = MainActivity.foregroundActivity();
         if (activity != null) activity.showVoiceStatus(message);
         stopSelf();
     }
 
     @Override public void onDestroy() {
+        main.removeCallbacks(notificationGuard);
         ++generation;
         ++voiceGeneration;
         ++resumeEpoch;
         stopMicrophone();
         if (recognizer != null) { recognizer.close(); recognizer = null; }
         if (model != null) { model.close(); model = null; }
-        boolean voiceStopped = voice == null || voice.stop() == TextToSpeech.SUCCESS;
+        // An uninitialized TTS engine cannot have submitted speech; an unconfirmed
+        // stop after voiceReady is different and must still fail closed by killing
+        // the process rather than risking capture over speech.
+        boolean voiceStopped = voice == null || !voiceReady || voice.stop() == TextToSpeech.SUCCESS;
         if (voice != null) { voice.shutdown(); voice = null; }
         if (voiceStopped) speechHold.cancelOwner(this);
         if (active == this) active = null;

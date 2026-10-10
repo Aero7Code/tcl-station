@@ -28,6 +28,12 @@ public final class VoiceCommandTest {
         expect("Open back camera", VoiceCommand.Action.CAMERA, 0);
         expect("What's today's weather", VoiceCommand.Action.WEATHER, 0);
         expect("What is the weather like today", VoiceCommand.Action.WEATHER, 0);
+        expect("Show me the forecast", VoiceCommand.Action.WEATHER, 0);
+        expect("Will it rain tomorrow?", VoiceCommand.Action.WEATHER, 0);
+        expect("What's the temperature outside?", VoiceCommand.Action.WEATHER, 0);
+        expect("How's the weather this week?", VoiceCommand.Action.WEATHER, 0);
+        expect("Is it snowing?", VoiceCommand.Action.WEATHER, 0);
+        expect("Play weather music", VoiceCommand.Action.UNKNOWN, 0);
         expect("Pause music", VoiceCommand.Action.PAUSE_MEDIA, 0);
         expect("Pause song", VoiceCommand.Action.PAUSE_MEDIA, 0);
         expect("Skip song", VoiceCommand.Action.NEXT_MEDIA, 0);

@@ -63,7 +63,9 @@ final class VoiceCommand {
         String text = normalize(spoken);
         VoiceCommand catalogCommand = CATALOG.get(text);
         if (catalogCommand != null) return catalogCommand;
-        if (text.matches("(?:whats|what is) (?:todays? )?weather(?: like today)?|(?:show|read|tell me) (?:the )?weather(?: report)?|weather")) return of(Action.WEATHER);
+        if (text.matches("(?:whats|what is|hows) (?:the )?weather(?: like)?(?: today| tomorrow| this week)?|(?:show|open|read|tell me|give me|show me) (?:the )?(?:weather|forecast)(?: report)?|weather|forecast")
+            || text.matches("(?:will|is) it (?:going to )?(?:rain|snow)(?:ing)?(?: today| tomorrow| this week)?")
+            || text.matches("(?:whats|what is) the temperature(?: outside| today| tomorrow)?")) return of(Action.WEATHER);
         if (text.matches("(?:what|whats|what is) (?:the )?time(?: is it)?|tell me the time|time")) return of(Action.TIME);
         if (text.matches("(?:open|show|switch to)(?: the)? front camera|front camera on")) return of(Action.CAMERA_FRONT);
         if (text.matches("(?:open|show)(?: the)?(?: live| back)? camera|camera on")) return of(Action.CAMERA);

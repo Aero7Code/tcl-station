@@ -43,6 +43,9 @@ if had_system:
     tap(system_label)
 assert any(n.get("text") == model_label for n in nodes()), "Could not select model voice"
 adb("shell", "pm", "grant", "com.aero.tclstation", "android.permission.RECORD_AUDIO")
+if any(n.get("text") == "Hands-free: On" for n in nodes()):
+    tap("Hands-free: On")
+    time.sleep(.8)
 tap("Hands-free: Off")
 try:
     deadline = time.monotonic() + 90

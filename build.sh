@@ -72,9 +72,12 @@ python3 tests/listener_tts_safety_test.py
 python3 tests/voice_choice_source_test.py
 python3 tests/tap_to_talk_source_test.py
 python3 tests/voice_action_source_test.py
-javac -d build/test-classes src/com/aero/tclstation/WeatherModel.java src/com/aero/tclstation/PanelState.java src/com/aero/tclstation/LegacyClipCleanup.java src/com/aero/tclstation/CameraOpenGate.java src/com/aero/tclstation/CameraCloseHandoff.java src/com/aero/tclstation/VoiceCommand.java src/com/aero/tclstation/HandsFreeGate.java tests/WeatherModelTest.java tests/PanelStateTest.java tests/LegacyClipCleanupTest.java tests/CameraOpenGateTest.java tests/CameraCloseHandoffTest.java tests/VoiceCommandTest.java tests/HandsFreeGateTest.java
+python3 tests/weather_feature_source_test.py
+javac -d build/test-classes src/com/aero/tclstation/WeatherModel.java src/com/aero/tclstation/WeatherForecast.java src/com/aero/tclstation/WeatherFreshness.java src/com/aero/tclstation/PanelState.java src/com/aero/tclstation/LegacyClipCleanup.java src/com/aero/tclstation/CameraOpenGate.java src/com/aero/tclstation/CameraCloseHandoff.java src/com/aero/tclstation/VoiceCommand.java src/com/aero/tclstation/HandsFreeGate.java tests/WeatherModelTest.java tests/WeatherForecastTest.java tests/WeatherFreshnessTest.java tests/PanelStateTest.java tests/LegacyClipCleanupTest.java tests/CameraOpenGateTest.java tests/CameraCloseHandoffTest.java tests/VoiceCommandTest.java tests/HandsFreeGateTest.java
 javac -d build/test-classes tests/TtsMicHoldTest.java
 java -cp build/test-classes com.aero.tclstation.WeatherModelTest
+java -cp build/test-classes com.aero.tclstation.WeatherForecastTest
+java -cp build/test-classes com.aero.tclstation.WeatherFreshnessTest
 java -cp build/test-classes com.aero.tclstation.PanelStateTest
 java -cp build/test-classes com.aero.tclstation.LegacyClipCleanupTest
 java -cp build/test-classes com.aero.tclstation.CameraOpenGateTest
