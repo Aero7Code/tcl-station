@@ -120,6 +120,7 @@ public final class ListeningService extends Service implements RecognitionListen
 
     @Override public void onCreate() {
         super.onCreate();
+        StationDiagnostics.event(this, StationDiagnosticLog.Event.SERVICE_STARTED);
         active = this;
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel(CHANNEL, "Station hands-free microphone", NotificationManager.IMPORTANCE_LOW));
@@ -206,11 +207,13 @@ public final class ListeningService extends Service implements RecognitionListen
             microphone = new SpeechService(recognizer, 16000.0f);
             capturing = microphone.startListening(this);
             if (!capturing) { fail("Microphone could not start"); return; }
+            StationDiagnostics.event(this, StationDiagnosticLog.Event.MIC_STARTED);
             notifyStatus("Listening locally • say Hey Station, then a command");
         } catch (IOException | RuntimeException e) { fail("Microphone unavailable"); }
     }
 
     private void stopMicrophone() {
+        if (capturing) StationDiagnostics.event(this, StationDiagnosticLog.Event.MIC_STOPPED);
         capturing = false;
         SpeechService old = microphone;
         microphone = null;
@@ -245,6 +248,8 @@ public final class ListeningService extends Service implements RecognitionListen
         main.postDelayed(() -> {
             if (active == this && speechHold.isHeld(id)) {
                 HandsFreePreference.setEnabled(this, false);
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_WATCHDOG_TIMEOUT);
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.HANDS_FREE_DISABLED);
                 MainActivity activity = MainActivity.foregroundActivity();
                 if (activity != null) activity.showVoiceStatus("Speech stalled; hands-free stopped");
                 stopSelf(); // Never resume capture over speech with an unknown end time.
@@ -356,33 +361,41 @@ public final class ListeningService extends Service implements RecognitionListen
                 fail("Offline voice unavailable; hands-free stopped without system-voice fallback");
                 return;
             }
-            if (voice.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) finishResponse(this, id);
+            if (voice.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) {
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_ENQUEUE_FAILED);
+                finishResponse(this, id);
+            } else StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_ENQUEUE_ACCEPTED);
             return;
         }
         if (pendingSpeechId != null) finishResponse(this, pendingSpeechId);
         pendingSpeech = message;
         pendingSpeechId = id;
         if (voice == null) {
+            StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_BIND_REQUEST);
             final int request = ++voiceGeneration;
             voice = StationVoiceProfile.create(this, status -> {
                 if (request != voiceGeneration) return;
                 if (status != TextToSpeech.SUCCESS || voice == null || !StationVoiceProfile.apply(this, voice)) {
+                    StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_BIND_FAILED);
                     finishResponse(this, pendingSpeechId);
                     pendingSpeech = null;
                     pendingSpeechId = null;
                     fail("Offline voice unavailable; hands-free stopped without system-voice fallback");
                     return;
                 }
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_BIND_OK);
                 voiceReady = true;
                 voice.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                    @Override public void onStart(String id) { }
-                    @Override public void onDone(String id) { main.post(() -> finishResponse(ListeningService.this, id)); }
-                    @Override public void onError(String id) { main.post(() -> finishResponse(ListeningService.this, id)); }
-                    @Override public void onStop(String id, boolean interrupted) { main.post(() -> finishResponse(ListeningService.this, id)); }
+                    @Override public void onStart(String id) { StationDiagnostics.event(ListeningService.this, StationDiagnosticLog.Event.VOICE_STARTED); }
+                    @Override public void onDone(String id) { StationDiagnostics.event(ListeningService.this, StationDiagnosticLog.Event.VOICE_FINISHED); main.post(() -> finishResponse(ListeningService.this, id)); }
+                    @Override public void onError(String id) { StationDiagnostics.event(ListeningService.this, StationDiagnosticLog.Event.VOICE_ERROR); main.post(() -> finishResponse(ListeningService.this, id)); }
+                    @Override public void onStop(String id, boolean interrupted) { StationDiagnostics.event(ListeningService.this, StationDiagnosticLog.Event.VOICE_FINISHED); main.post(() -> finishResponse(ListeningService.this, id)); }
                 });
                 if (pendingSpeech != null) {
-                    if (voice.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
+                    if (voice.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR) {
+                        StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_ENQUEUE_FAILED);
                         finishResponse(this, pendingSpeechId);
+                    } else StationDiagnostics.event(this, StationDiagnosticLog.Event.VOICE_ENQUEUE_ACCEPTED);
                     pendingSpeech = null;
                     pendingSpeechId = null;
                 }
@@ -404,6 +417,7 @@ public final class ListeningService extends Service implements RecognitionListen
     }
 
     @Override public void onDestroy() {
+        StationDiagnostics.event(this, StationDiagnosticLog.Event.SERVICE_STOPPED);
         main.removeCallbacks(notificationGuard);
         ++generation;
         ++voiceGeneration;
@@ -415,12 +429,16 @@ public final class ListeningService extends Service implements RecognitionListen
         // stop after voiceReady is different and must still fail closed by killing
         // the process rather than risking capture over speech.
         boolean voiceStopped = voice == null || !voiceReady || voice.stop() == TextToSpeech.SUCCESS;
+        if (!voiceStopped) StationDiagnostics.event(this, StationDiagnosticLog.Event.TTS_STOP_UNCONFIRMED);
         if (voice != null) { voice.shutdown(); voice = null; }
         if (voiceStopped) speechHold.cancelOwner(this);
         if (active == this) active = null;
         refreshButton();
         super.onDestroy();
-        if (!voiceStopped) android.os.Process.killProcess(android.os.Process.myPid());
+        if (!voiceStopped) {
+            StationDiagnostics.event(this, StationDiagnosticLog.Event.PROCESS_EXIT_SAFETY);
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }

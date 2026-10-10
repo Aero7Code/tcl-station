@@ -81,10 +81,14 @@ public final class TtsMicHoldTest {
             "Activity teardown must release only its own hold, after TTS is stopped");
         check(activityTeardown.indexOf("speech.stop()") < activityTeardown.indexOf("cancelSpokenResponses(this)"),
             "Never release a microphone hold before stopping its TTS engine");
-        check(activityTeardown.contains("if (!speechStopped) android.os.Process.killProcess(android.os.Process.myPid())"),
+        check(activityTeardown.contains("if (!speechStopped) {")
+            && activityTeardown.contains("StationDiagnosticLog.Event.PROCESS_EXIT_SAFETY")
+            && activityTeardown.indexOf("StationDiagnosticLog.Event.PROCESS_EXIT_SAFETY") < activityTeardown.indexOf("android.os.Process.killProcess(android.os.Process.myPid())"),
             "A failed TTS stop must restart the process rather than retain an orphan hold forever");
         String serviceTeardown = source.substring(source.indexOf("@Override public void onDestroy()"));
-        check(serviceTeardown.contains("if (!voiceStopped) android.os.Process.killProcess(android.os.Process.myPid())"),
+        check(serviceTeardown.contains("if (!voiceStopped) {")
+            && serviceTeardown.contains("StationDiagnosticLog.Event.PROCESS_EXIT_SAFETY")
+            && serviceTeardown.indexOf("StationDiagnosticLog.Event.PROCESS_EXIT_SAFETY") < serviceTeardown.indexOf("android.os.Process.killProcess(android.os.Process.myPid())"),
             "Service TTS stop failure must also fail closed and reset orphaned state");
         String scratch = System.getenv("TMPDIR");
         check(scratch != null && !scratch.isEmpty(), "Set TMPDIR to a writable scratch directory");

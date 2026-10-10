@@ -122,6 +122,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_STARTED);
         try {
             LegacyClipCleanup.remove(new File(getFilesDir(), "security-recordings"));
             deleteSharedPreferences("recorder_status");
@@ -761,7 +762,7 @@ public final class MainActivity extends Activity {
 
     private void switchVoice() {
         // Do not release any microphone hold until the previous engine confirms stop.
-        if (speech != null && speech.stop() != TextToSpeech.SUCCESS) {
+        if (speechReady && speech != null && speech.stop() != TextToSpeech.SUCCESS) {
             showVoiceStatus("Could not stop speech; voice unchanged");
             return;
         }
@@ -791,18 +792,22 @@ public final class MainActivity extends Activity {
                 ListeningService.spokenResponseFinished(this, id);
                 return;
             }
-            if (speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR)
+            if (speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.ERROR) {
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_ENQUEUE_FAILED);
                 ListeningService.spokenResponseFinished(this, id);
+            } else StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_ENQUEUE_ACCEPTED);
             return;
         }
         if (pendingSpeechId != null) ListeningService.spokenResponseFinished(this, pendingSpeechId);
         pendingSpeech = message;
         pendingSpeechId = id;
         if (speech == null) {
+            StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_BIND_REQUEST);
             final int request = ++speechGeneration;
             speech = StationVoiceProfile.create(this, status -> {
                 if (request != speechGeneration) return;
                 if (status != TextToSpeech.SUCCESS || speech == null) {
+                    StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_BIND_FAILED);
                     showVoiceStatus("Voice engine unavailable; tap Test spoken reply to retry");
                     ListeningService.spokenResponseFinished(this, pendingSpeechId);
                     pendingSpeech = null;
@@ -814,6 +819,7 @@ public final class MainActivity extends Activity {
                 }
                 speechReady = applyVoiceChoice();
                 if (!speechReady) {
+                    StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_BIND_FAILED);
                     ListeningService.spokenResponseFinished(this, pendingSpeechId);
                     pendingSpeech = null;
                     pendingSpeechId = null;
@@ -822,15 +828,18 @@ public final class MainActivity extends Activity {
                     speech = null;
                     return;
                 }
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_BIND_OK);
                 speech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                    @Override public void onStart(String id) { }
-                    @Override public void onDone(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
-                    @Override public void onError(String id) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
-                    @Override public void onStop(String id, boolean interrupted) { runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                    @Override public void onStart(String id) { StationDiagnostics.event(MainActivity.this, StationDiagnosticLog.Event.ACTIVITY_VOICE_STARTED); }
+                    @Override public void onDone(String id) { StationDiagnostics.event(MainActivity.this, StationDiagnosticLog.Event.ACTIVITY_VOICE_FINISHED); runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                    @Override public void onError(String id) { StationDiagnostics.event(MainActivity.this, StationDiagnosticLog.Event.ACTIVITY_VOICE_ERROR); runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
+                    @Override public void onStop(String id, boolean interrupted) { StationDiagnostics.event(MainActivity.this, StationDiagnosticLog.Event.ACTIVITY_VOICE_FINISHED); runOnUiThread(() -> ListeningService.spokenResponseFinished(MainActivity.this, id)); }
                 });
                 if (pendingSpeech != null) {
-                    if (speech.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR)
+                    if (speech.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, pendingSpeechId) == TextToSpeech.ERROR) {
+                        StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_ENQUEUE_FAILED);
                         ListeningService.spokenResponseFinished(this, pendingSpeechId);
+                    } else StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_ENQUEUE_ACCEPTED);
                     pendingSpeech = null;
                     pendingSpeechId = null;
                 }
@@ -841,9 +850,25 @@ public final class MainActivity extends Activity {
     private void watchActivitySpeech(String id) {
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             if (!ListeningService.isSpokenResponsePending(id)) return;
+            StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_VOICE_WATCHDOG_TIMEOUT);
+            if (!speechReady && id.equals(pendingSpeechId)) {
+                // No utterance was enqueued: Android reports stop() as an error
+                // for an engine that never finished binding. Cancel the pending
+                // callback before releasing our microphone hold; do not kill
+                // Station for a TTS request that never began playback.
+                ++speechGeneration;
+                if (speech != null) { speech.shutdown(); speech = null; }
+                pendingSpeech = null;
+                pendingSpeechId = null;
+                ListeningService.cancelSpokenResponses(this);
+                showVoiceStatus("Voice engine did not start. Retry or select system voice.");
+                return;
+            }
             // A missing TTS callback cannot hold Speak hostage forever. Never
             // release the hold unless this Activity's engine confirms stop.
             if (speech != null && speech.stop() != TextToSpeech.SUCCESS) {
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.TTS_STOP_UNCONFIRMED);
+                StationDiagnostics.event(this, StationDiagnosticLog.Event.PROCESS_EXIT_SAFETY);
                 android.os.Process.killProcess(android.os.Process.myPid());
                 return;
             }
@@ -988,17 +1013,25 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        StationDiagnostics.event(this, StationDiagnosticLog.Event.ACTIVITY_STOPPED);
         weatherUi.removeCallbacks(weatherExpiry);
         if (weatherDialog != null) weatherDialog.dismiss();
         stopLocalInput();
         if (tapModel != null) { tapModel.close(); tapModel = null; }
-        boolean speechStopped = speech == null || speech.stop() == TextToSpeech.SUCCESS;
+        boolean speechStopped = speech == null || !speechReady || speech.stop() == TextToSpeech.SUCCESS;
+        if (!speechStopped) StationDiagnostics.event(this, StationDiagnosticLog.Event.TTS_STOP_UNCONFIRMED);
+        ++speechGeneration; // Ignore a late TTS initialization callback after teardown.
+        pendingSpeech = null;
+        pendingSpeechId = null;
         if (speech != null) speech.shutdown();
         if (speechStopped) ListeningService.cancelSpokenResponses(this);
         // Binder death stops orphaned TTS when the engine could not confirm stop.
         // Never resume a microphone over uncertain playback or retain the hold forever.
         network.shutdownNow();
         super.onDestroy();
-        if (!speechStopped) android.os.Process.killProcess(android.os.Process.myPid());
+        if (!speechStopped) {
+            StationDiagnostics.event(this, StationDiagnosticLog.Event.PROCESS_EXIT_SAFETY);
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
     }
 }
